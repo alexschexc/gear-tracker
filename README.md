@@ -27,3 +27,7 @@ python ui.py
 ```
 
 Once MVP is achieved we'll have a published single file Binary. Currently I am only supporting Linux. Windows and MacOS support are coming in the immediate future.
+
+## If you're enjoying or benefitting from this software leave me a tip
+
+<https://paypal.me/ASchexnayder296>
