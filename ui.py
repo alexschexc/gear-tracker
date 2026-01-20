@@ -22,6 +22,9 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QFormLayout,
     QGroupBox,
+    QListWidget,
+    QListWidgetItem,
+    QCheckBox,
 )
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QColor, QPalette
@@ -43,6 +46,10 @@ from gear_tracker import (
     Transfer,
     Attachment,
     ReloadBatch,
+    Loadout,
+    LoadoutItem,
+    LoadoutConsumable,
+    LoadoutCheckout,
 )
 
 
@@ -66,6 +73,7 @@ class GearTrackerApp(QMainWindow):
         self.tabs.addTab(self.create_reloading_tab(), "🧪 Reloading")
         self.tabs.addTab(self.create_soft_gear_tab(), "🎒 Soft Gear")
         self.tabs.addTab(self.create_consumables_tab(), "📦 Consumables")
+        self.tabs.addTab(self.create_loadouts_tab(), "🎒 Loadouts")
         self.tabs.addTab(self.create_checkouts_tab(), "📋 Checkouts")
         self.tabs.addTab(self.create_borrowers_tab(), "👥 Borrowers")
         self.tabs.addTab(self.create_nfa_items_tab(), "🔇 NFA Items")
@@ -1055,6 +1063,639 @@ class GearTrackerApp(QMainWindow):
         layout.addWidget(table)
         dialog.setLayout(layout)
         dialog.exec()
+
+    # ============== LOADOUTS TAB ==============
+
+    def create_loadouts_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout()
+
+        info_label = QLabel(
+            "Hunt/Trip loadout profiles for one-click checkout of gear and consumables."
+        )
+        info_label.setStyleSheet("color: #888; font-style: italic; padding: 5px;")
+        layout.addWidget(info_label)
+
+        self.loadout_table = QTableWidget()
+        self.loadout_table.setColumnCount(5)
+        self.loadout_table.setHorizontalHeaderLabels(
+            ["Name", "Description", "Items", "Consumables", "Created"]
+        )
+        self.loadout_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        layout.addWidget(self.loadout_table)
+
+        btn_layout = QHBoxLayout()
+
+        add_btn = QPushButton("Create Loadout")
+        add_btn.clicked.connect(self.open_create_loadout_dialog)
+        btn_layout.addWidget(add_btn)
+
+        edit_btn = QPushButton("Edit Loadout")
+        edit_btn.clicked.connect(self.open_edit_loadout_dialog)
+        btn_layout.addWidget(edit_btn)
+
+        duplicate_btn = QPushButton("Duplicate Loadout")
+        duplicate_btn.clicked.connect(self.duplicate_loadout)
+        btn_layout.addWidget(duplicate_btn)
+
+        delete_btn = QPushButton("🗑️ Delete")
+        delete_btn.setStyleSheet("background-color: #6B2020;")
+        delete_btn.clicked.connect(self.delete_selected_loadout)
+        btn_layout.addWidget(delete_btn)
+
+        checkout_btn = QPushButton("🚀 Checkout Loadout")
+        checkout_btn.setStyleSheet("background-color: #20206B; font-weight: bold;")
+        checkout_btn.clicked.connect(self.open_checkout_loadout_dialog)
+        btn_layout.addWidget(checkout_btn)
+
+        layout.addLayout(btn_layout)
+        widget.setLayout(layout)
+        return widget
+
+    def refresh_loadouts(self):
+        self.loadout_table.setRowCount(0)
+        loadouts = self.repo.get_all_loadouts()
+
+        for i, lo in enumerate(loadouts):
+            self.loadout_table.insertRow(i)
+            self.loadout_table.setItem(i, 0, QTableWidgetItem(lo.name))
+
+            description_text = lo.description if lo.description else ""
+            self.loadout_table.setItem(i, 1, QTableWidgetItem(description_text))
+
+            items = self.repo.get_loadout_items(lo.id)
+            item_names = []
+            for item in items:
+                if item.item_type == GearCategory.FIREARM:
+                    firearms = {f.id: f.name for f in self.repo.get_all_firearms()}
+                    item_names.append(f"🔫 {firearms.get(item.item_id, 'Unknown')}")
+                elif item.item_type == GearCategory.SOFT_GEAR:
+                    soft_gear = {g.id: g.name for g in self.repo.get_all_soft_gear()}
+                    item_names.append(f"🎒 {soft_gear.get(item.item_id, 'Unknown')}")
+                elif item.item_type == GearCategory.NFA_ITEM:
+                    nfa_items = {n.id: n.name for n in self.repo.get_all_nfa_items()}
+                    item_names.append(f"🔇 {nfa_items.get(item.item_id, 'Unknown')}")
+
+            self.loadout_table.setItem(i, 2, QTableWidgetItem(", ".join(item_names)))
+
+            consumables = self.repo.get_loadout_consumables(lo.id)
+            cons_names = []
+            for cons in consumables:
+                all_cons = self.repo.get_all_consumables()
+                cons_dict = {c.id: c for c in all_cons}
+                c = cons_dict.get(cons.consumable_id)
+                if c:
+                    cons_names.append(f"{c.name} ({cons.quantity} {c.unit})")
+
+            self.loadout_table.setItem(i, 3, QTableWidgetItem(", ".join(cons_names)))
+
+            created_text = (
+                lo.created_date.strftime("%Y-%m-%d") if lo.created_date else "Never"
+            )
+            self.loadout_table.setItem(i, 4, QTableWidgetItem(created_text))
+
+    def _get_selected_loadout(self) -> Loadout | None:
+        row = self.loadout_table.currentRow()
+        if row < 0:
+            return None
+        loadouts = self.repo.get_all_loadouts()
+        if row >= len(loadouts):
+            return None
+        return loadouts[row]
+
+    def delete_selected_loadout(self):
+        loadout = self._get_selected_loadout()
+        if not loadout:
+            QMessageBox.warning(
+                self, "No Selection", "Please select a loadout to delete."
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Delete",
+            f"Are you sure you want to delete loadout '{loadout.name}'?\n\n"
+            "This will also delete all associated items, consumables, and checkout records.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.repo.delete_loadout(loadout.id)
+            self.refresh_loadouts()
+            QMessageBox.information(
+                self, "Deleted", f"Loadout '{loadout.name}' deleted successfully."
+            )
+
+    def duplicate_loadout(self):
+        loadout = self._get_selected_loadout()
+        if not loadout:
+            QMessageBox.warning(
+                self, "No Selection", "Please select a loadout to duplicate."
+            )
+            return
+
+        # Get existing items and consumables
+        items = self.repo.get_loadout_items(loadout.id)
+        consumables = self.repo.get_loadout_consumables(loadout.id)
+
+        # Create new loadout
+        new_loadout = Loadout(
+            id=str(uuid.uuid4()),
+            name=f"{loadout.name} (Copy)",
+            description=loadout.description,
+            created_date=datetime.now(),
+            notes=loadout.notes,
+        )
+        self.repo.create_loadout(new_loadout)
+
+        # Copy items with new IDs
+        for item in items:
+            new_item = LoadoutItem(
+                id=str(uuid.uuid4()),
+                loadout_id=new_loadout.id,
+                item_id=item.item_id,
+                item_type=item.item_type,
+                notes=item.notes,
+            )
+            self.repo.add_loadout_item(new_item)
+
+        # Copy consumables with new IDs
+        for cons in consumables:
+            new_cons = LoadoutConsumable(
+                id=str(uuid.uuid4()),
+                loadout_id=new_loadout.id,
+                consumable_id=cons.consumable_id,
+                quantity=cons.quantity,
+                notes=cons.notes,
+            )
+            self.repo.add_loadout_consumable(new_cons)
+
+        self.refresh_loadouts()
+        QMessageBox.information(
+            self,
+            "Duplicated",
+            f"Loadout '{loadout.name}' duplicated successfully as '{new_loadout.name}'.",
+        )
+
+    def open_create_loadout_dialog(self, loadout=None):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Create Loadout" if loadout is None else "Edit Loadout")
+        dialog.setMinimumSize(800, 600)
+
+        layout = QVBoxLayout(dialog)
+
+        # Form fields
+        form_layout = QFormLayout()
+
+        name_input = QLineEdit()
+        if loadout:
+            name_input.setText(loadout.name)
+        form_layout.addRow("Name:", name_input)
+
+        description_input = QLineEdit()
+        if loadout:
+            description_input.setText(loadout.description)
+        form_layout.addRow("Description:", description_input)
+
+        notes_input = QTextEdit()
+        notes_input.setMaximumHeight(80)
+        if loadout:
+            notes_input.setText(loadout.notes)
+        form_layout.addRow("Notes:", notes_input)
+
+        layout.addLayout(form_layout)
+
+        # Track selected items
+        self.selected_firearms = []
+        self.selected_soft_gear = []
+        self.selected_nfa_items = []
+        self.selected_consumables = {}
+
+        # Tab widget for item selection
+        tabs = QTabWidget()
+
+        # Firearms tab
+        firearms_tab = QWidget()
+        firearms_layout = QVBoxLayout()
+
+        info_label = QLabel(
+            "Select firearms - their mounted attachments will be automatically included."
+        )
+        info_label.setStyleSheet("color: #666; font-style: italic; padding: 5px;")
+        firearms_layout.addWidget(info_label)
+
+        available_firearms = [
+            f
+            for f in self.repo.get_all_firearms()
+            if f.status == CheckoutStatus.AVAILABLE
+        ]
+        if not available_firearms:
+            firearms_layout.addWidget(QLabel("No available firearms to add."))
+        else:
+            firearms_list = QWidget()
+            firearms_list_layout = QVBoxLayout()
+            firearms_list_layout.setContentsMargins(0, 0, 0, 0)
+
+            for fw in available_firearms:
+                checkbox = QCheckBox(f"🔫 {fw.name}")
+                checkbox.setProperty("item_id", fw.id)
+                if loadout:
+                    existing_items = self.repo.get_loadout_items(loadout.id)
+                    if any(
+                        item.item_id == fw.id and item.item_type == GearCategory.FIREARM
+                        for item in existing_items
+                    ):
+                        checkbox.setChecked(True)
+                firearms_list_layout.addWidget(checkbox)
+
+                # Show mounted attachments
+                attachments = self.repo.get_attachments_for_firearm(fw.id)
+                if attachments:
+                    for att in attachments:
+                        att_label = QLabel(f"    🔧 {att.name} ({att.category})")
+                        att_label.setStyleSheet(
+                            "color: #888; font-size: 10px; margin-left: 20px;"
+                        )
+                        firearms_list_layout.addWidget(att_label)
+
+            firearms_list.setLayout(firearms_list_layout)
+            firearms_layout.addWidget(firearms_list)
+
+        firearms_tab.setLayout(firearms_layout)
+        tabs.addTab(firearms_tab, "🔫 Firearms")
+
+        # Soft Gear tab
+        soft_gear_tab = QWidget()
+        soft_gear_layout = QVBoxLayout()
+
+        info_label = QLabel("Select soft gear items to include in this loadout.")
+        info_label.setStyleSheet("color: #666; font-style: italic; padding: 5px;")
+        soft_gear_layout.addWidget(info_label)
+
+        available_soft_gear = [
+            g
+            for g in self.repo.get_all_soft_gear()
+            if g.status == CheckoutStatus.AVAILABLE
+        ]
+        if not available_soft_gear:
+            soft_gear_layout.addWidget(QLabel("No available soft gear to add."))
+        else:
+            for gear in available_soft_gear:
+                checkbox = QCheckBox(f"🎒 {gear.name} ({gear.category})")
+                checkbox.setProperty("item_id", gear.id)
+                if loadout:
+                    existing_items = self.repo.get_loadout_items(loadout.id)
+                    if any(
+                        item.item_id == gear.id
+                        and item.item_type == GearCategory.SOFT_GEAR
+                        for item in existing_items
+                    ):
+                        checkbox.setChecked(True)
+                soft_gear_layout.addWidget(checkbox)
+
+        soft_gear_tab.setLayout(soft_gear_layout)
+        tabs.addTab(soft_gear_tab, "🎒 Soft Gear")
+
+        # NFA Items tab
+        nfa_tab = QWidget()
+        nfa_layout = QVBoxLayout()
+
+        info_label = QLabel("Select NFA items to include in this loadout.")
+        info_label.setStyleSheet("color: #666; font-style: italic; padding: 5px;")
+        nfa_layout.addWidget(info_label)
+
+        available_nfa = [
+            n
+            for n in self.repo.get_all_nfa_items()
+            if n.status == CheckoutStatus.AVAILABLE
+        ]
+        if not available_nfa:
+            nfa_layout.addWidget(QLabel("No available NFA items to add."))
+        else:
+            for nfa in available_nfa:
+                checkbox = QCheckBox(f"🔇 {nfa.name} ({nfa.nfa_type.value})")
+                checkbox.setProperty("item_id", nfa.id)
+                if loadout:
+                    existing_items = self.repo.get_loadout_items(loadout.id)
+                    if any(
+                        item.item_id == nfa.id
+                        and item.item_type == GearCategory.NFA_ITEM
+                        for item in existing_items
+                    ):
+                        checkbox.setChecked(True)
+                nfa_layout.addWidget(checkbox)
+
+        nfa_tab.setLayout(nfa_layout)
+        tabs.addTab(nfa_tab, "🔇 NFA Items")
+
+        # Consumables tab
+        consumables_tab = QWidget()
+        consumables_layout = QVBoxLayout()
+
+        info_label = QLabel("Select consumables and quantities for this loadout.")
+        info_label.setStyleSheet("color: #666; font-style: italic; padding: 5px;")
+        consumables_layout.addWidget(info_label)
+
+        consumables_table = QTableWidget()
+        consumables_table.setColumnCount(4)
+        consumables_table.setHorizontalHeaderLabels(
+            ["Name", "Category", "Unit", "Quantity"]
+        )
+        consumables_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+
+        all_consumables = self.repo.get_all_consumables()
+        for i, cons in enumerate(all_consumables):
+            consumables_table.insertRow(i)
+            consumables_table.setItem(i, 0, QTableWidgetItem(cons.name))
+            consumables_table.setItem(i, 1, QTableWidgetItem(cons.category))
+
+            cons_cell = QTableWidgetItem(f"{cons.quantity} {cons.unit}")
+            cons_cell.setData(Qt.ItemDataRole.UserRole, cons.id)
+            consumables_table.setItem(i, 2, cons_cell)
+
+            qty_spinbox = QSpinBox()
+            qty_spinbox.setMinimum(0)
+            qty_spinbox.setMaximum(9999)
+            qty_spinbox.setValue(0)
+            qty_spinbox.setProperty("consumable_id", cons.id)
+
+            if loadout:
+                existing_cons = self.repo.get_loadout_consumables(loadout.id)
+                for lc in existing_cons:
+                    if lc.consumable_id == cons.id:
+                        qty_spinbox.setValue(lc.quantity)
+                        break
+
+            consumables_table.setCellWidget(i, 3, qty_spinbox)
+
+        consumables_layout.addWidget(consumables_table)
+
+        add_cons_btn = QPushButton("Add Selected Consumables")
+        add_cons_btn.clicked.connect(
+            lambda: self.add_consumable_to_loadout(consumables_table)
+        )
+        consumables_layout.addWidget(add_cons_btn)
+
+        # Show currently selected consumables
+        self.selected_consumables_list = QListWidget()
+        self.selected_consumables_list.setMaximumHeight(150)
+        cons_list_label = QLabel("Selected Consumables:")
+        cons_list_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        consumables_layout.addWidget(cons_list_label)
+        consumables_layout.addWidget(self.selected_consumables_list)
+
+        consumables_tab.setLayout(consumables_layout)
+        tabs.addTab(consumables_tab, "📦 Consumables")
+
+        layout.addWidget(tabs)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+
+        save_btn = QPushButton("Save Loadout")
+        save_btn.setStyleSheet("background-color: #202060; font-weight: bold;")
+        save_btn.clicked.connect(
+            lambda: self.save_loadout(
+                dialog,
+                name_input.text(),
+                description_input.text(),
+                notes_input.toPlainText(),
+                tabs,
+                loadout,
+            )
+        )
+        btn_layout.addWidget(save_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        layout.addLayout(btn_layout)
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def add_consumable_to_loadout(self, consumables_table):
+        """Helper to add selected consumables to temporary list"""
+        for row in range(consumables_table.rowCount()):
+            qty_widget = consumables_table.cellWidget(row, 3)
+            if qty_widget and qty_widget.value() > 0:
+                consumable_id = consumables_table.item(row, 0).data(
+                    Qt.ItemDataRole.UserRole
+                )
+                if consumable_id:
+                    self.selected_consumables[consumable_id] = {
+                        "id": consumable_id,
+                        "quantity": qty_widget.value(),
+                    }
+
+        # Update list widget
+        self.selected_consumables_list.clear()
+        all_cons = self.repo.get_all_consumables()
+        cons_dict = {c.id: c for c in all_cons}
+
+        for cons_id, data in self.selected_consumables.items():
+            cons = cons_dict.get(cons_id)
+            if cons:
+                item_text = f"{cons.name} ({data['quantity']} {cons.unit})"
+                self.selected_consumables_list.addItem(item_text)
+
+    def save_loadout(self, dialog, name, description, notes, tabs, loadout=None):
+        """Save or update loadout"""
+        # Validate
+        if not name.strip():
+            QMessageBox.warning(dialog, "Validation Error", "Loadout name is required.")
+            return
+
+        # Get selected items from tabs
+        selected_firearms = []
+        selected_soft_gear = []
+        selected_nfa_items = []
+
+        # Firearms tab (widget at index 0)
+        firearms_widget = tabs.widget(0)
+        if firearms_widget:
+            for child in firearms_widget.findChildren(QCheckBox):
+                if child.isChecked():
+                    item_id = child.property("item_id")
+                    if item_id:
+                        selected_firearms.append(item_id)
+
+        # Soft Gear tab (widget at index 1)
+        soft_gear_widget = tabs.widget(1)
+        if soft_gear_widget:
+            for child in soft_gear_widget.findChildren(QCheckBox):
+                if child.isChecked():
+                    item_id = child.property("item_id")
+                    if item_id:
+                        selected_soft_gear.append(item_id)
+
+        # NFA Items tab (widget at index 2)
+        nfa_widget = tabs.widget(2)
+        if nfa_widget:
+            for child in nfa_widget.findChildren(QCheckBox):
+                if child.isChecked():
+                    item_id = child.property("item_id")
+                    if item_id:
+                        selected_nfa_items.append(item_id)
+
+        # Check if at least one item is selected
+        if not (
+            selected_firearms
+            or selected_soft_gear
+            or selected_nfa_items
+            or self.selected_consumables
+        ):
+            QMessageBox.warning(
+                dialog,
+                "Validation Error",
+                "Please select at least one item or consumable.",
+            )
+            return
+
+        if loadout:
+            # Update existing loadout
+            loadout.name = name
+            loadout.description = description
+            loadout.notes = notes
+            self.repo.update_loadout(loadout)
+
+            # Clear old items and consumables
+            old_items = self.repo.get_loadout_items(loadout.id)
+            for item in old_items:
+                self.repo.remove_loadout_item(item.id)
+
+            old_consumables = self.repo.get_loadout_consumables(loadout.id)
+            for cons in old_consumables:
+                self.repo.remove_loadout_consumable(cons.id)
+
+            # Add new items and consumables
+            for fw_id in selected_firearms:
+                loadout_item = LoadoutItem(
+                    id=str(uuid.uuid4()),
+                    loadout_id=loadout.id,
+                    item_id=fw_id,
+                    item_type=GearCategory.FIREARM,
+                )
+                self.repo.add_loadout_item(loadout_item)
+
+            for sg_id in selected_soft_gear:
+                loadout_item = LoadoutItem(
+                    id=str(uuid.uuid4()),
+                    loadout_id=loadout.id,
+                    item_id=sg_id,
+                    item_type=GearCategory.SOFT_GEAR,
+                )
+                self.repo.add_loadout_item(loadout_item)
+
+            for nfa_id in selected_nfa_items:
+                loadout_item = LoadoutItem(
+                    id=str(uuid.uuid4()),
+                    loadout_id=loadout.id,
+                    item_id=nfa_id,
+                    item_type=GearCategory.NFA_ITEM,
+                )
+                self.repo.add_loadout_item(loadout_item)
+
+            for cons_id, data in self.selected_consumables.items():
+                loadout_cons = LoadoutConsumable(
+                    id=str(uuid.uuid4()),
+                    loadout_id=loadout.id,
+                    consumable_id=cons_id,
+                    quantity=data["quantity"],
+                )
+                self.repo.add_loadout_consumable(loadout_cons)
+
+            QMessageBox.information(
+                dialog, "Success", f"Loadout '{name}' updated successfully."
+            )
+        else:
+            # Create new loadout
+            new_loadout = Loadout(
+                id=str(uuid.uuid4()),
+                name=name,
+                description=description,
+                created_date=datetime.now(),
+                notes=notes,
+            )
+            self.repo.create_loadout(new_loadout)
+
+            # Add items
+            for fw_id in selected_firearms:
+                loadout_item = LoadoutItem(
+                    id=str(uuid.uuid4()),
+                    loadout_id=new_loadout.id,
+                    item_id=fw_id,
+                    item_type=GearCategory.FIREARM,
+                )
+                self.repo.add_loadout_item(loadout_item)
+
+            for sg_id in selected_soft_gear:
+                loadout_item = LoadoutItem(
+                    id=str(uuid.uuid4()),
+                    loadout_id=new_loadout.id,
+                    item_id=sg_id,
+                    item_type=GearCategory.SOFT_GEAR,
+                )
+                self.repo.add_loadout_item(loadout_item)
+
+            for nfa_id in selected_nfa_items:
+                loadout_item = LoadoutItem(
+                    id=str(uuid.uuid4()),
+                    loadout_id=new_loadout.id,
+                    item_id=nfa_id,
+                    item_type=GearCategory.NFA_ITEM,
+                )
+                self.repo.add_loadout_item(loadout_item)
+
+            # Add consumables
+            for cons_id, data in self.selected_consumables.items():
+                loadout_cons = LoadoutConsumable(
+                    id=str(uuid.uuid4()),
+                    loadout_id=new_loadout.id,
+                    consumable_id=cons_id,
+                    quantity=data["quantity"],
+                )
+                self.repo.add_loadout_consumable(loadout_cons)
+
+            QMessageBox.information(
+                dialog, "Success", f"Loadout '{name}' created successfully."
+            )
+
+        # Clear temp selections
+        self.selected_consumables = {}
+        self.selected_firearms = []
+        self.selected_soft_gear = []
+        self.selected_nfa_items = []
+
+        self.refresh_loadouts()
+        dialog.accept()
+
+    def open_edit_loadout_dialog(self):
+        loadout = self._get_selected_loadout()
+        if not loadout:
+            QMessageBox.warning(
+                self, "No Selection", "Please select a loadout to edit."
+            )
+            return
+        self.open_create_loadout_dialog(loadout)
+
+    def open_checkout_loadout_dialog(self):
+        loadout = self._get_selected_loadout()
+        if not loadout:
+            QMessageBox.warning(
+                self, "No Selection", "Please select a loadout to checkout."
+            )
+            return
+        QMessageBox.information(
+            self,
+            "Coming Soon",
+            "Loadout checkout functionality will be implemented in the next steps.",
+        )
 
     # ============== CHECKOUTS TAB ==============
 
@@ -2186,6 +2827,7 @@ class GearTrackerApp(QMainWindow):
         self.refresh_reloads()
         self.refresh_soft_gear()
         self.refresh_consumables()
+        self.refresh_loadouts()
         self.refresh_checkouts()
         self.refresh_borrowers()
         self.refresh_nfa_items()
