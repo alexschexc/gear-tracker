@@ -4,13 +4,23 @@
 
 This project is currently in a Pre-Alpha state. It is quickly moving towards a Minimal Viable Product. The intent is for this software to run offline forever. This is partly because I don't want to be responsible for people's data, partly to respect your privacy as an end user, and partly because that's not what I'm experimenting with in this project.
 
-## Security & Privacy
+## Data storage & privacy
 
-- This app stores all data locally in a single SQLite file. The developer does not operate any server and never has access to your data.
+GearTracker stores all data in a single local SQLite database file.
+By default, the database is created at:
 
-- You are responsible for securing and backing up your own data (e.g., encrypted drives, offline backups).
+- Linux/macOS: `~/.gear_tracker/tracker.db`
+- Windows: `C:\Users\<username>\.gear_tracker\tracker.db`
 
-- This tool is for personal record‑keeping only and does not constitute legal or compliance advice.
+No data is ever sent to any remote server. The developer does not operate any backend service and never has access to your inventory, NFA records, or logs.
+
+If you want additional protection, you can move the `.gear_tracker` folder onto an encrypted volume (e.g., LUKS, VeraCrypt, BitLocker, FileVault) and then symlink it back into your home directory.
+
+**Backups:** To back up your data, close GearTracker and copy `tracker.db` to a safe location, for example:
+
+```bash
+cp ~/.gear_tracker/tracker.db ~/.gear_tracker/tracker.db.backup
+```
 
 ## Run time instructions for testing the current source code
 
