@@ -233,6 +233,45 @@ class ReloadBatch:
     notes: str = ""
 
 
+@dataclass
+class Loadout:
+    id: str
+    name: str
+    description: str = ""
+    created_date: datetime | None = None
+    notes: str = ""
+
+
+@dataclass
+class LoadoutItem:
+    id: str
+    loadout_id: str
+    item_id: str
+    item_type: GearCategory
+    notes: str = ""
+
+
+@dataclass
+class LoadoutConsumable:
+    id: str
+    loadout_id: str
+    consumable_id: str
+    quantity: int
+    notes: str = ""
+
+
+@dataclass
+class LoadoutCheckout:
+    id: str
+    loadout_id: str
+    checkout_id: str
+    return_date: datetime | None = None
+    rounds_fired: int = 0
+    rain_exposure: bool = False
+    ammo_type: str = ""
+    notes: str = ""
+
+
 # ============== REPOSITORY ==============
 
 
@@ -427,6 +466,54 @@ class GearRepository:
                 notes TEXT,
 
                 FOREIGN KEY(firearm_id) REFERENCES firearms(id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS loadouts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                created_date INTEGER NOT NULL,
+                notes TEXT
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS loadout_items (
+                id TEXT PRIMARY KEY,
+                loadout_id TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                item_type TEXT NOT NULL,
+                notes TEXT,
+                FOREIGN KEY(loadout_id) REFERENCES loadouts(id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS loadout_consumables (
+                id TEXT PRIMARY KEY,
+                loadout_id TEXT NOT NULL,
+                consumable_id TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                notes TEXT,
+                FOREIGN KEY(loadout_id) REFERENCES loadouts(id),
+                FOREIGN KEY(consumable_id) REFERENCES consumables(id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS loadout_checkouts (
+                id TEXT PRIMARY KEY,
+                loadout_id TEXT NOT NULL,
+                checkout_id TEXT NOT NULL,
+                return_date INTEGER,
+                rounds_fired INTEGER DEFAULT 0,
+                rain_exposure INTEGER DEFAULT 0,
+                ammo_type TEXT,
+                notes TEXT,
+                FOREIGN KEY(loadout_id) REFERENCES loadouts(id),
+                FOREIGN KEY(checkout_id) REFERENCES checkouts(id)
             )
         """)
 
@@ -1654,6 +1741,330 @@ class GearRepository:
         cursor.execute("DELETE FROM reload_batches WHERE id = ?", (batch_id,))
         conn.commit()
         conn.close()
+
+    # -------- LOADOUT METHODS --------
+
+    def create_loadout(self, loadout: Loadout) -> None:
+        """Create new loadout profile"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO loadouts VALUES (?, ?, ?, ?, ?)",
+            (
+                loadout.id,
+                loadout.name,
+                loadout.description,
+                int(loadout.created_date.timestamp())
+                if loadout.created_date
+                else int(datetime.now().timestamp()),
+                loadout.notes,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_all_loadouts(self) -> list[Loadout]:
+        """Get all loadout profiles"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM loadouts ORDER BY name")
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [
+            Loadout(
+                id=row[0],
+                name=row[1],
+                description=row[2] or "",
+                created_date=datetime.fromtimestamp(row[3]) if row[3] else None,
+                notes=row[4] or "",
+            )
+            for row in rows
+        ]
+
+    def update_loadout(self, loadout: Loadout) -> None:
+        """Update loadout details"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE loadouts SET name = ?, description = ?, created_date = ?, notes = ? WHERE id = ?",
+            (
+                loadout.name,
+                loadout.description,
+                int(loadout.created_date.timestamp())
+                if loadout.created_date
+                else int(datetime.now().timestamp()),
+                loadout.notes,
+                loadout.id,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def delete_loadout(self, loadout_id: str) -> None:
+        """Delete loadout and all associated items/consumables"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM loadout_items WHERE loadout_id = ?", (loadout_id,))
+        cursor.execute(
+            "DELETE FROM loadout_consumables WHERE loadout_id = ?", (loadout_id,)
+        )
+        cursor.execute(
+            "DELETE FROM loadout_checkouts WHERE loadout_id = ?", (loadout_id,)
+        )
+        cursor.execute("DELETE FROM loadouts WHERE id = ?", (loadout_id,))
+        conn.commit()
+        conn.close()
+
+    def add_loadout_item(self, item: LoadoutItem) -> None:
+        """Add item to loadout"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO loadout_items VALUES (?, ?, ?, ?, ?)",
+            (item.id, item.loadout_id, item.item_id, item.item_type.value, item.notes),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_loadout_items(self, loadout_id: str) -> list[LoadoutItem]:
+        """Get all items in loadout"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM loadout_items WHERE loadout_id = ?", (loadout_id,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [
+            LoadoutItem(
+                id=row[0],
+                loadout_id=row[1],
+                item_id=row[2],
+                item_type=GearCategory(row[3]),
+                notes=row[4] or "",
+            )
+            for row in rows
+        ]
+
+    def remove_loadout_item(self, item_id: str) -> None:
+        """Remove item from loadout"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM loadout_items WHERE id = ?", (item_id,))
+        conn.commit()
+        conn.close()
+
+    def add_loadout_consumable(self, item: LoadoutConsumable) -> None:
+        """Add consumable to loadout"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO loadout_consumables VALUES (?, ?, ?, ?, ?)",
+            (item.id, item.loadout_id, item.consumable_id, item.quantity, item.notes),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_loadout_consumables(self, loadout_id: str) -> list[LoadoutConsumable]:
+        """Get all consumables in loadout"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM loadout_consumables WHERE loadout_id = ?", (loadout_id,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [
+            LoadoutConsumable(
+                id=row[0],
+                loadout_id=row[1],
+                consumable_id=row[2],
+                quantity=row[3],
+                notes=row[4] or "",
+            )
+            for row in rows
+        ]
+
+    def update_loadout_consumable_qty(self, item_id: str, qty: int) -> None:
+        """Update consumable quantity in loadout"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE loadout_consumables SET quantity = ? WHERE id = ?", (qty, item_id)
+        )
+        conn.commit()
+        conn.close()
+
+    def remove_loadout_consumable(self, item_id: str) -> None:
+        """Remove consumable from loadout"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM loadout_consumables WHERE id = ?", (item_id,))
+        conn.commit()
+        conn.close()
+
+    def validate_loadout_checkout(self, loadout_id: str) -> dict:
+        """Validate loadout before checkout - returns warnings and critical issues"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        loadout_items = self.get_loadout_items(loadout_id)
+        loadout_consumables = self.get_loadout_consumables(loadout_id)
+
+        warnings = []
+        critical_issues = []
+
+        # Get current state
+        firearms = self.get_all_firearms()
+        firearm_dict = {f.id: f for f in firearms}
+        soft_gear = self.get_all_soft_gear()
+        soft_gear_dict = {g.id: g for g in soft_gear}
+        nfa_items = self.get_all_nfa_items()
+        nfa_dict = {n.id: n for n in nfa_items}
+        consumables = self.get_all_consumables()
+        consumable_dict = {c.id: c for c in consumables}
+
+        # Validate items
+        for item in loadout_items:
+            if item.item_type == GearCategory.FIREARM:
+                if item.item_id in firearm_dict:
+                    fw = firearm_dict[item.item_id]
+                    if fw.status != CheckoutStatus.AVAILABLE:
+                        critical_issues.append(
+                            f"Firearm '{fw.name}' is not available (status: {fw.status.value})"
+                        )
+                    if fw.needs_maintenance:
+                        critical_issues.append(
+                            f"Firearm '{fw.name}' needs maintenance before checkout"
+                        )
+            elif item.item_type == GearCategory.SOFT_GEAR:
+                if item.item_id in soft_gear_dict:
+                    gear = soft_gear_dict[item.item_id]
+                    if gear.status != CheckoutStatus.AVAILABLE:
+                        critical_issues.append(
+                            f"Soft gear '{gear.name}' is not available (status: {gear.status.value})"
+                        )
+            elif item.item_type == GearCategory.NFA_ITEM:
+                if item.item_id in nfa_dict:
+                    nfa = nfa_dict[item.item_id]
+                    if nfa.status != CheckoutStatus.AVAILABLE:
+                        critical_issues.append(
+                            f"NFA item '{nfa.name}' is not available (status: {nfa.status.value})"
+                        )
+
+        # Validate consumables
+        for item in loadout_consumables:
+            if item.consumable_id in consumable_dict:
+                cons = consumable_dict[item.consumable_id]
+                stock_after = cons.quantity - item.quantity
+                if stock_after < 0:
+                    warnings.append(
+                        f"Consumable '{cons.name}': Will go negative ({stock_after} {cons.unit}) - indicates restock needed"
+                    )
+                elif stock_after < cons.min_quantity:
+                    warnings.append(
+                        f"Consumable '{cons.name}': Will be below minimum ({stock_after} < {cons.min_quantity} {cons.unit})"
+                    )
+
+        conn.close()
+
+        can_checkout = len(critical_issues) == 0
+        return {
+            "can_checkout": can_checkout,
+            "warnings": warnings,
+            "critical_issues": critical_issues,
+        }
+
+    def checkout_loadout(
+        self, loadout_id: str, borrower_id: str, expected_return: datetime
+    ) -> tuple[str, list[str]]:
+        """One-click checkout of entire loadout"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Validate first
+        validation = self.validate_loadout_checkout(loadout_id)
+        if not validation["can_checkout"]:
+            conn.close()
+            checkout_id = ""
+            return (checkout_id, validation["critical_issues"] + validation["warnings"])
+
+        loadout_items = self.get_loadout_items(loadout_id)
+        loadout_consumables = self.get_loadout_consumables(loadout_id)
+
+        checkout_ids = []
+
+        # Create checkouts for each item
+        for item in loadout_items:
+            checkout_id = str(uuid.uuid4())
+            cursor.execute(
+                "INSERT INTO checkouts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    checkout_id,
+                    item.item_id,
+                    item.item_type.value,
+                    borrower_id,
+                    int(datetime.now().timestamp()),
+                    int(expected_return.timestamp()) if expected_return else None,
+                    "",
+                    None,
+                ),
+            )
+
+            # Update item status
+            if item.item_type == GearCategory.FIREARM:
+                cursor.execute(
+                    "UPDATE firearms SET status = ? WHERE id = ?",
+                    (CheckoutStatus.CHECKED_OUT.value, item.item_id),
+                )
+            elif item.item_type == GearCategory.SOFT_GEAR:
+                cursor.execute(
+                    "UPDATE soft_gear SET status = ? WHERE id = ?",
+                    (CheckoutStatus.CHECKED_OUT.value, item.item_id),
+                )
+            elif item.item_type == GearCategory.NFA_ITEM:
+                cursor.execute(
+                    "UPDATE nfa_items SET status = ? WHERE id = ?",
+                    (CheckoutStatus.CHECKED_OUT.value, item.item_id),
+                )
+
+            checkout_ids.append(checkout_id)
+
+        # Deduct consumables
+        all_consumables = self.get_all_consumables()
+        consumable_dict = {c.id: c for c in all_consumables}
+
+        for item in loadout_consumables:
+            if item.consumable_id in consumable_dict:
+                current_qty = consumable_dict[item.consumable_id].quantity
+                new_qty = current_qty - item.quantity
+                cursor.execute(
+                    "UPDATE consumables SET quantity = ? WHERE id = ?",
+                    (new_qty, item.consumable_id),
+                )
+
+                # Record transaction
+                tx_id = str(uuid.uuid4())
+                cursor.execute(
+                    "INSERT INTO consumable_transactions VALUES (?, ?, ?, ?, ?)",
+                    (
+                        tx_id,
+                        item.consumable_id,
+                        "USE",
+                        -item.quantity,
+                        int(datetime.now().timestamp()),
+                    ),
+                )
+
+        all_messages = validation["warnings"]
+        conn.commit()
+        conn.close()
+
+        main_checkout_id = checkout_ids[0] if checkout_ids else ""
+        return (main_checkout_id, all_messages)
 
     # -------- EXPORT METHODS --------
 
