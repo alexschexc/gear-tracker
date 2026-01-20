@@ -649,11 +649,14 @@ class GearRepository:
                 form_type=row[10] if len(row) > 10 else "",
                 barrel_length=row[11] if len(row) > 11 else "",
                 trust_name=row[12] if len(row) > 12 else "",
-                rounds_fired=row[13] if len(row) > 13 else 0,
-                clean_interval_rounds=row[14] if len(row) > 14 else 500,
-                oil_interval_days=row[15] if len(row) > 15 else 90,
-                needs_maintenance=bool(row[16]) if len(row) > 16 else False,
-                maintenance_conditions=row[17] if len(row) > 17 else "",
+                transfer_status=TransferStatus(row[13])
+                if len(row) > 13 and row[13]
+                else TransferStatus.OWNED,
+                rounds_fired=row[14] if len(row) > 14 else 0,
+                clean_interval_rounds=row[15] if len(row) > 15 else 500,
+                oil_interval_days=row[16] if len(row) > 16 else 90,
+                needs_maintenance=bool(row[17]) if len(row) > 17 else False,
+                maintenance_conditions=row[18] if len(row) > 18 else "",
             )
             for row in rows
         ]
@@ -752,7 +755,8 @@ class GearRepository:
             )
 
         if last_clean_date:
-            days_since_clean = (datetime.now() - last_clean_date).days
+            last_clean_dt = datetime.fromtimestamp(last_clean_date)
+            days_since_clean = (datetime.now() - last_clean_dt).days
             if oil_interval and days_since_clean >= oil_interval:
                 reasons.append(
                     f"Last cleaned {days_since_clean} days ago (interval: {oil_interval} days)"
@@ -1442,7 +1446,7 @@ class GearRepository:
                 )
             elif checkout.item_type == GearCategory.NFA_ITEM:
                 cursor.execute(
-                    "SELECT name FROM nfa_items where id = ?", (checkout.item_id)
+                    "SELECT name FROM nfa_items where id = ?", (checkout.item_id,)
                 )
 
             item_row = cursor.fetchone()
@@ -2009,8 +2013,8 @@ class GearRepository:
                     borrower_id,
                     int(datetime.now().timestamp()),
                     int(expected_return.timestamp()) if expected_return else None,
-                    "",
                     None,
+                    "",
                 ),
             )
 
@@ -2064,7 +2068,54 @@ class GearRepository:
         conn.close()
 
         main_checkout_id = checkout_ids[0] if checkout_ids else ""
+
+        # Create loadout_checkout record
+        loadout_checkout_id = str(uuid.uuid4())
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO loadout_checkouts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                loadout_checkout_id,
+                loadout_id,
+                main_checkout_id,
+                None,  # return_date
+                0,  # rounds_fired
+                0,  # rain_exposure
+                "",  # ammo_type
+                "",  # notes
+            ),
+        )
+        conn.commit()
+        conn.close()
+
         return (main_checkout_id, all_messages)
+
+    def get_loadout_checkout(self, checkout_id: str) -> LoadoutCheckout | None:
+        """Get loadout checkout record"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT * FROM loadout_checkouts WHERE checkout_id = ?",
+            (checkout_id,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return None
+
+        return LoadoutCheckout(
+            id=row[0],
+            loadout_id=row[1],
+            checkout_id=row[2],
+            return_date=datetime.fromtimestamp(row[3]) if row[3] else None,
+            rounds_fired=row[4],
+            rain_exposure=bool(row[5]),
+            ammo_type=row[6] or "",
+            notes=row[7] or "",
+        )
 
     def return_loadout(
         self,
@@ -2108,11 +2159,20 @@ class GearRepository:
         loadout_items = self.get_loadout_items(loadout_id)
 
         for item in loadout_items:
-            # Update checkout return date
+            # Get the checkout_id for this specific item
             cursor.execute(
-                "UPDATE checkouts SET actual_return = ? WHERE id = ?",
-                (int(datetime.now().timestamp()), checkout_id),
+                "SELECT id FROM checkouts WHERE item_id = ? AND actual_return IS NULL",
+                (item.item_id,),
             )
+            result = cursor.fetchone()
+
+            if result:
+                item_checkout_id = result[0]
+                # Update checkout return date
+                cursor.execute(
+                    "UPDATE checkouts SET actual_return = ? WHERE id = ?",
+                    (int(datetime.now().timestamp()), item_checkout_id),
+                )
 
             # Update item status back to AVAILABLE
             if item.item_type == GearCategory.FIREARM:

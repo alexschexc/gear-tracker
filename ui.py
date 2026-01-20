@@ -1,5 +1,6 @@
 import sys
 import uuid
+import sqlite3
 from datetime import datetime, timedelta
 from PyQt6.QtWidgets import (
     QApplication,
@@ -1691,11 +1692,183 @@ class GearTrackerApp(QMainWindow):
                 self, "No Selection", "Please select a loadout to checkout."
             )
             return
-        QMessageBox.information(
-            self,
-            "Coming Soon",
-            "Loadout checkout functionality will be implemented in the next steps.",
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Checkout Loadout: {loadout.name}")
+        dialog.setMinimumSize(600, 500)
+
+        layout = QVBoxLayout(dialog)
+
+        # Loadout info
+        info_group = QGroupBox("Loadout Details")
+        info_layout = QFormLayout()
+
+        name_label = QLabel(loadout.name)
+        info_layout.addRow("Name:", name_label)
+
+        desc_label = QLabel(loadout.description if loadout.description else "None")
+        info_layout.addRow("Description:", desc_label)
+
+        # Show items
+        items = self.repo.get_loadout_items(loadout.id)
+        item_summary = []
+        for item in items:
+            if item.item_type == GearCategory.FIREARM:
+                firearms = {f.id: f.name for f in self.repo.get_all_firearms()}
+                item_summary.append(f"🔫 {firearms.get(item.item_id, 'Unknown')}")
+            elif item.item_type == GearCategory.SOFT_GEAR:
+                soft_gear = {g.id: g.name for g in self.repo.get_all_soft_gear()}
+                item_summary.append(f"🎒 {soft_gear.get(item.item_id, 'Unknown')}")
+            elif item.item_type == GearCategory.NFA_ITEM:
+                nfa_items = {n.id: n.name for n in self.repo.get_all_nfa_items()}
+                item_summary.append(f"🔇 {nfa_items.get(item.item_id, 'Unknown')}")
+
+        items_text = ", ".join(item_summary) if item_summary else "None"
+        items_label = QLabel(items_text)
+        items_label.setWordWrap(True)
+        info_layout.addRow("Items:", items_label)
+
+        # Show consumables
+        consumables = self.repo.get_loadout_consumables(loadout.id)
+        cons_summary = []
+        all_cons = self.repo.get_all_consumables()
+        cons_dict = {c.id: c for c in all_cons}
+
+        for cons in consumables:
+            c = cons_dict.get(cons.consumable_id)
+            if c:
+                cons_summary.append(f"{c.name} ({cons.quantity} {c.unit})")
+
+        consumables_text = ", ".join(cons_summary) if cons_summary else "None"
+        consumables_label = QLabel(consumables_text)
+        consumables_label.setWordWrap(True)
+        info_layout.addRow("Consumables:", consumables_label)
+
+        info_group.setLayout(info_layout)
+        layout.addWidget(info_group)
+
+        # Checkout form
+        form_layout = QFormLayout()
+
+        # Borrower dropdown
+        borrower_combo = QComboBox()
+        borrowers = self.repo.get_all_borrowers()
+        for borrower in borrowers:
+            borrower_combo.addItem(borrower.name, borrower.id)
+
+        if not borrowers:
+            borrower_combo.addItem("No borrowers available", "")
+            form_layout.addRow("Borrower:", borrower_combo)
+        else:
+            form_layout.addRow("Borrower:", borrower_combo)
+
+        # Expected return date
+        return_date_edit = QDateEdit()
+        return_date_edit.setDate(QDate.currentDate().addDays(7))
+        return_date_edit.setCalendarPopup(True)
+        form_layout.addRow("Expected Return:", return_date_edit)
+
+        # Notes
+        notes_input = QTextEdit()
+        notes_input.setMaximumHeight(80)
+        form_layout.addRow("Notes:", notes_input)
+
+        layout.addLayout(form_layout)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+
+        checkout_btn = QPushButton("🚀 Checkout Loadout")
+        checkout_btn.setStyleSheet("background-color: #202060; font-weight: bold;")
+        checkout_btn.clicked.connect(
+            lambda: self.perform_loadout_checkout(
+                dialog, loadout, borrower_combo, return_date_edit, notes_input
+            )
         )
+        btn_layout.addWidget(checkout_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        layout.addLayout(btn_layout)
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def perform_loadout_checkout(
+        self,
+        dialog,
+        loadout: Loadout,
+        borrower_combo: QComboBox,
+        return_date_edit: QDateEdit,
+        notes_input: QTextEdit,
+    ):
+        """Execute loadout checkout with validation"""
+        borrower_id = borrower_combo.currentData()
+        if not borrower_id:
+            QMessageBox.warning(
+                dialog,
+                "No Borrower",
+                "Please create a borrower first before checking out items.",
+            )
+            return
+
+        return_date = datetime(
+            return_date_edit.date().year(),
+            return_date_edit.date().month(),
+            return_date_edit.date().day(),
+        )
+        notes = notes_input.toPlainText()
+
+        # Validate loadout checkout
+        validation = self.repo.validate_loadout_checkout(loadout.id)
+
+        if validation["critical_issues"]:
+            # Show critical issues dialog
+            critical_text = "\n".join(
+                f"• {issue}" for issue in validation["critical_issues"]
+            )
+            QMessageBox.critical(
+                dialog,
+                "Cannot Checkout Loadout",
+                f"The following critical issues must be resolved:\n\n{critical_text}",
+            )
+            return
+
+        if validation["warnings"]:
+            # Show warnings dialog with option to proceed
+            warning_text = "\n".join(f"• {w}" for w in validation["warnings"])
+            reply = QMessageBox.question(
+                dialog,
+                "Checkout Warnings",
+                f"The following warnings exist:\n\n{warning_text}\n\nDo you want to proceed with checkout?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+
+            if reply == QMessageBox.StandardButton.No:
+                return
+
+        # Perform checkout
+        checkout_id, messages = self.repo.checkout_loadout(
+            loadout.id,
+            borrower_id,
+            return_date,
+        )
+
+        if checkout_id:
+            message = f"Loadout '{loadout.name}' checked out successfully!\n\n"
+            if messages:
+                message += "Notes:\n" + "\n".join(f"• {m}" for m in messages)
+            QMessageBox.information(dialog, "Checkout Successful", message)
+            self.refresh_all()
+            dialog.accept()
+        else:
+            error_message = "Failed to checkout loadout.\n\n"
+            if messages:
+                error_message += "Errors:\n" + "\n".join(f"• {m}" for m in messages)
+            QMessageBox.critical(dialog, "Checkout Failed", error_message)
+            return
 
     # ============== CHECKOUTS TAB ==============
 
@@ -1842,16 +2015,315 @@ class GearTrackerApp(QMainWindow):
         checkouts = self.repo.get_active_checkouts()
         checkout, _, item_name = checkouts[row]
 
-        reply = QMessageBox.question(
-            self,
-            "Confirm Return",
-            f"Mark '{item_name}' as returned?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        # Check if this checkout is from a loadout
+        loadout_checkout = self.repo.get_loadout_checkout(checkout.id)
+
+        if loadout_checkout:
+            # Loadout checkout - show enhanced return dialog
+            self.open_return_loadout_dialog(checkout, loadout_checkout)
+        else:
+            # Regular checkout - show simple return dialog
+            reply = QMessageBox.question(
+                self,
+                "Confirm Return",
+                f"Mark '{item_name}' as returned?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+
+            if reply == QMessageBox.StandardButton.Yes:
+                self.repo.return_item(checkout.id)
+                self.refresh_all()
+
+    def open_return_loadout_dialog(self, checkout, loadout_checkout: LoadoutCheckout):
+        """Enhanced return dialog for loadouts with round counts and maintenance data"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Return Loadout: {checkout.item_id}")
+        dialog.setMinimumSize(700, 600)
+
+        layout = QVBoxLayout(dialog)
+
+        # Loadout info
+        info_group = QGroupBox("Loadout Return Information")
+        info_layout = QFormLayout()
+
+        # Get loadout details
+        loadout = None
+        all_loadouts = self.repo.get_all_loadouts()
+        for lo in all_loadouts:
+            if lo.id == loadout_checkout.loadout_id:
+                loadout = lo
+                break
+
+        if loadout:
+            name_label = QLabel(loadout.name)
+            info_layout.addRow("Loadout:", name_label)
+
+            desc_label = QLabel(loadout.description if loadout.description else "None")
+            info_layout.addRow("Description:", desc_label)
+
+        # Get firearms in loadout
+        loadout_items = self.repo.get_loadout_items(loadout_checkout.loadout_id)
+        firearms_in_loadout = [
+            item for item in loadout_items if item.item_type == GearCategory.FIREARM
+        ]
+
+        if firearms_in_loadout:
+            info_layout.addRow(QLabel("<b>Round Counts (Per Firearm):</b>"))
+
+            # Create per-firearm round count inputs
+            self.firearm_rounds_inputs = {}
+            all_firearms = self.repo.get_all_firearms()
+            firearm_dict = {f.id: f for f in all_firearms}
+
+            for item in firearms_in_loadout:
+                firearm = firearm_dict.get(item.item_id)
+                if firearm:
+                    round_label = QLabel(f"{firearm.name}:")
+                    round_spinbox = QSpinBox()
+                    round_spinbox.setMinimum(0)
+                    round_spinbox.setMaximum(9999)
+                    round_spinbox.setValue(0)
+                    round_spinbox.setProperty("firearm_id", firearm.id)
+
+                    self.firearm_rounds_inputs[firearm.id] = round_spinbox
+
+                    round_layout = QHBoxLayout()
+                    round_layout.addWidget(round_label)
+                    round_layout.addWidget(round_spinbox)
+                    round_layout.addStretch()
+
+                    info_layout.addRow("", round_layout)
+
+        # Rain exposure
+        rain_checkbox = QCheckBox("Exposed to rain during use?")
+        info_layout.addRow("", rain_checkbox)
+
+        # Ammo type
+        ammo_layout = QHBoxLayout()
+        ammo_label = QLabel("Ammo Type:")
+        ammo_combo = QComboBox()
+        ammo_combo.addItems(["Normal", "Corrosive", "Lead", "Custom"])
+        ammo_combo.setCurrentText("Normal")
+        ammo_layout.addWidget(ammo_label)
+        ammo_layout.addWidget(ammo_combo)
+        info_layout.addRow("", ammo_layout)
+
+        # Custom ammo type input (hidden by default)
+        custom_ammo_input = QLineEdit()
+        custom_ammo_input.setPlaceholderText("Enter custom ammo type")
+        custom_ammo_input.setVisible(False)
+        info_layout.addRow("", custom_ammo_input)
+
+        # Show custom input if "Custom" selected
+        ammo_combo.currentTextChanged.connect(
+            lambda text: custom_ammo_input.setVisible(text == "Custom")
         )
 
-        if reply == QMessageBox.StandardButton.Yes:
-            self.repo.return_item(checkout.id)
-            self.refresh_all()
+        # Notes
+        notes_input = QTextEdit()
+        notes_input.setMaximumHeight(100)
+        notes_input.setPlaceholderText("Additional notes about this trip...")
+        info_layout.addRow("Notes:", notes_input)
+
+        info_group.setLayout(info_layout)
+        layout.addWidget(info_group)
+
+        # Consumables section - Auto-restock
+        if loadout_checkout.loadout_id:
+            consumables_layout = QGroupBox("Consumables - Auto-Restock Unused Items")
+            cons_box = QVBoxLayout()
+
+            info_text = QLabel(
+                "Check items below to add unused quantities back to inventory:"
+            )
+            info_text.setStyleSheet(
+                "color: #888; font-style: italic; margin-bottom: 10px;"
+            )
+            cons_box.addWidget(info_text)
+
+            # Get loadout consumables
+            loadout_consumables = self.repo.get_loadout_consumables(
+                loadout_checkout.loadout_id
+            )
+            all_consumables = self.repo.get_all_consumables()
+            consumable_dict = {c.id: c for c in all_consumables}
+
+            # Create checkboxes for each consumable
+            self.restock_checkboxes = {}
+            for lc in loadout_consumables:
+                cons = consumable_dict.get(lc.consumable_id)
+                if cons:
+                    checkbox = QCheckBox(
+                        f"{cons.name} - Add back all unused ({lc.quantity} {cons.unit})"
+                    )
+                    checkbox.setChecked(True)  # Default to checked
+                    checkbox.setProperty("consumable_id", lc.consumable_id)
+                    checkbox.setProperty("original_qty", lc.quantity)
+
+                    self.restock_checkboxes[lc.consumable_id] = checkbox
+                    cons_box.addWidget(checkbox)
+
+            restock_btn = QPushButton("🔄 Add Selected Items Back to Inventory")
+            restock_btn.setStyleSheet("background-color: #206020;")
+            restock_btn.clicked.connect(
+                lambda: self.restock_unused_consumables(loadout_checkout.loadout_id)
+            )
+            cons_box.addWidget(restock_btn)
+
+            consumables_layout.setLayout(cons_box)
+            layout.addWidget(consumables_layout)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+
+        return_btn = QPushButton("✅ Return Loadout")
+        return_btn.setStyleSheet("background-color: #202060; font-weight: bold;")
+        return_btn.clicked.connect(
+            lambda: self.perform_loadout_return(
+                dialog,
+                checkout,
+                loadout_checkout,
+                self.firearm_rounds_inputs,
+                rain_checkbox,
+                ammo_combo,
+                custom_ammo_input,
+                notes_input,
+            )
+        )
+        btn_layout.addWidget(return_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        layout.addLayout(btn_layout)
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def restock_unused_consumables(self, loadout_id: str):
+        """Add unused consumables back to inventory"""
+        added_count = 0
+        restocked_items = []
+
+        all_consumables = self.repo.get_all_consumables()
+        consumable_dict = {c.id: c for c in all_consumables}
+
+        for cons_id, checkbox in self.restock_checkboxes.items():
+            if checkbox.isChecked():
+                original_qty = checkbox.property("original_qty")
+                cons = consumable_dict.get(cons_id)
+
+                if cons:
+                    # Add back to inventory
+                    new_qty = cons.quantity + original_qty
+
+                    # Update consumable quantity
+                    conn = sqlite3.connect(self.repo.db_path)
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "UPDATE consumables SET quantity = ? WHERE id = ?",
+                        (new_qty, cons_id),
+                    )
+
+                    # Record transaction
+                    tx_id = str(uuid.uuid4())
+                    cursor.execute(
+                        "INSERT INTO consumable_transactions VALUES (?, ?, ?, ?, ?)",
+                        (
+                            tx_id,
+                            cons_id,
+                            "RESTOCK",
+                            original_qty,
+                            int(datetime.now().timestamp()),
+                        ),
+                    )
+                    conn.commit()
+                    conn.close()
+
+                    restocked_items.append(f"{cons.name} (+{original_qty} {cons.unit})")
+                    added_count += 1
+
+        if added_count > 0:
+            message = f"Added {added_count} item(s) back to inventory:\n\n" + "\n".join(
+                f"• {item}" for item in restocked_items
+            )
+            QMessageBox.information(self, "Restock Successful", message)
+        else:
+            QMessageBox.information(
+                self, "No Items", "No items were selected for restocking."
+            )
+
+    def perform_loadout_return(
+        self,
+        dialog: QDialog,
+        checkout,
+        loadout_checkout: LoadoutCheckout,
+        rounds_inputs: dict,
+        rain_checkbox: QCheckBox,
+        ammo_combo: QComboBox,
+        custom_ammo_input: QLineEdit,
+        notes_input: QTextEdit,
+    ):
+        """Execute loadout return with round counts and maintenance data"""
+        # Build rounds_fired_dict
+        rounds_fired_dict = {}
+        total_rounds = 0
+
+        for firearm_id, spinbox in rounds_inputs.items():
+            rounds = spinbox.value()
+            if rounds > 0:
+                rounds_fired_dict[firearm_id] = rounds
+                total_rounds += rounds
+
+        # If no rounds entered, ask for confirmation
+        if total_rounds == 0:
+            reply = QMessageBox.question(
+                dialog,
+                "No Rounds Entered",
+                "No round counts were entered. Mark all firearms as 0 rounds fired?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+
+            if reply == QMessageBox.StandardButton.No:
+                return
+
+        # Get maintenance data
+        rain_exposure = rain_checkbox.isChecked()
+        ammo_type = ammo_combo.currentText()
+
+        if ammo_type == "Custom":
+            ammo_type = custom_ammo_input.text().strip()
+            if not ammo_type:
+                QMessageBox.warning(
+                    dialog, "Custom Ammo", "Please enter a custom ammo type."
+                )
+                return
+
+        notes = notes_input.toPlainText()
+
+        rounds_fired_dict["total"] = total_rounds
+
+        # Call repo return_loadout
+        self.repo.return_loadout(
+            loadout_checkout.id,
+            rounds_fired_dict,
+            rain_exposure,
+            ammo_type,
+            notes,
+        )
+
+        # Success message
+        message = f"Loadout returned successfully!\n\n"
+        message += f"Total Rounds Fired: {total_rounds}\n"
+        if rain_exposure:
+            message += f"Rain Exposure: Yes\n"
+        if ammo_type and ammo_type != "Normal":
+            message += f"Ammo Type: {ammo_type}\n"
+
+        QMessageBox.information(dialog, "Return Successful", message)
+        self.refresh_all()
+        dialog.accept()
 
     # ============== BORROWERS TAB ==============
 
@@ -2353,16 +2825,22 @@ class GearTrackerApp(QMainWindow):
 
         def save():
             selected = items[item_combo.currentIndex()]
-            log = MaintenanceLog(
-                id=str(uuid.uuid4()),
-                item_id=selected.id,
-                item_type=item_type,
-                log_type=MaintenanceType(type_combo.currentText()),
-                date=datetime.now(),
-                details=details_input.toPlainText(),
-                ammo_count=ammo_spin.value() if ammo_spin.value() > 0 else None,
-            )
-            self.repo.log_maintenance(log)
+            log_type = MaintenanceType(type_combo.currentText())
+            details = details_input.toPlainText()
+
+            if item_type == GearCategory.FIREARM:
+                self.repo.mark_maintenance_done(selected.id, log_type, details)
+            else:
+                log = MaintenanceLog(
+                    id=str(uuid.uuid4()),
+                    item_id=selected.id,
+                    item_type=item_type,
+                    log_type=log_type,
+                    date=datetime.now(),
+                    details=details,
+                    ammo_count=ammo_spin.value() if ammo_spin.value() > 0 else None,
+                )
+                self.repo.log_maintenance(log)
             self.refresh_all()
             dialog.accept()
 
