@@ -15,6 +15,7 @@ By default, the database is created at:
 No data is ever sent to any remote server. The developer does not operate any backend service and never has access to your inventory, NFA records, or logs.
 
 If you want additional protection, you can move the `.gear_tracker` folder onto an encrypted volume (e.g., LUKS, VeraCrypt, BitLocker, FileVault) and then symlink it back into your home directory.
+(this has not been tested by the developer yet. This should work in theory, I will leave an update note confirming if this is the case)
 
 **Backups:** To back up your data, close GearTracker and copy `tracker.db` to a safe location, for example:
 
