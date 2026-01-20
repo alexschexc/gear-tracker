@@ -2066,6 +2066,190 @@ class GearRepository:
         main_checkout_id = checkout_ids[0] if checkout_ids else ""
         return (main_checkout_id, all_messages)
 
+    def return_loadout(
+        self,
+        loadout_checkout_id: str,
+        rounds_fired_dict: dict,
+        rain_exposure: bool = False,
+        ammo_type: str = "",
+        notes: str = "",
+    ) -> None:
+        """Return loadout with usage data - updates round counts and creates maintenance logs"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Get loadout info
+        cursor.execute(
+            "SELECT loadout_id, checkout_id FROM loadout_checkouts WHERE id = ?",
+            (loadout_checkout_id,),
+        )
+        result = cursor.fetchone()
+
+        if not result:
+            conn.close()
+            return
+
+        loadout_id, checkout_id = result
+
+        # Update loadout checkout record
+        cursor.execute(
+            "UPDATE loadout_checkouts SET return_date = ?, rounds_fired = ?, rain_exposure = ?, ammo_type = ?, notes = ? WHERE id = ?",
+            (
+                int(datetime.now().timestamp()),
+                rounds_fired_dict.get("total", 0),
+                1 if rain_exposure else 0,
+                ammo_type,
+                notes,
+                loadout_checkout_id,
+            ),
+        )
+
+        # Get items and update status
+        loadout_items = self.get_loadout_items(loadout_id)
+
+        for item in loadout_items:
+            # Update checkout return date
+            cursor.execute(
+                "UPDATE checkouts SET actual_return = ? WHERE id = ?",
+                (int(datetime.now().timestamp()), checkout_id),
+            )
+
+            # Update item status back to AVAILABLE
+            if item.item_type == GearCategory.FIREARM:
+                cursor.execute(
+                    "UPDATE firearms SET status = ? WHERE id = ?",
+                    (CheckoutStatus.AVAILABLE.value, item.item_id),
+                )
+            elif item.item_type == GearCategory.SOFT_GEAR:
+                cursor.execute(
+                    "UPDATE soft_gear SET status = ? WHERE id = ?",
+                    (CheckoutStatus.AVAILABLE.value, item.item_id),
+                )
+            elif item.item_type == GearCategory.NFA_ITEM:
+                cursor.execute(
+                    "UPDATE nfa_items SET status = ? WHERE id = ?",
+                    (CheckoutStatus.AVAILABLE.value, item.item_id),
+                )
+
+        # Update round counts per firearm
+        for item in loadout_items:
+            if (
+                item.item_type == GearCategory.FIREARM
+                and item.item_id in rounds_fired_dict
+            ):
+                self.update_firearm_rounds(
+                    item.item_id, rounds_fired_dict[item.item_id]
+                )
+
+        # Create maintenance logs for each firearm in loadout
+        for item in loadout_items:
+            if (
+                item.item_type == GearCategory.FIREARM
+                and item.item_id in rounds_fired_dict
+            ):
+                rounds = rounds_fired_dict[item.item_id]
+                firearm_id = item.item_id
+
+                # FIRED_ROUNDS log
+                if rounds > 0:
+                    log = MaintenanceLog(
+                        id=str(uuid.uuid4()),
+                        item_id=firearm_id,
+                        item_type=GearCategory.FIREARM,
+                        log_type=MaintenanceType.FIRED_ROUNDS,
+                        date=datetime.now(),
+                        details=f"Rounds fired: {rounds}",
+                        ammo_count=rounds,
+                    )
+                    cursor.execute(
+                        "INSERT INTO maintenance_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            log.id,
+                            log.item_id,
+                            log.item_type.value,
+                            log.log_type.value,
+                            int(log.date.timestamp()),
+                            log.details,
+                            log.ammo_count,
+                            log.photo_path,
+                        ),
+                    )
+
+                # RAIN_EXPOSURE log
+                if rain_exposure:
+                    log = MaintenanceLog(
+                        id=str(uuid.uuid4()),
+                        item_id=firearm_id,
+                        item_type=GearCategory.FIREARM,
+                        log_type=MaintenanceType.RAIN_EXPOSURE,
+                        date=datetime.now(),
+                        details="Exposed to rain during use",
+                    )
+                    cursor.execute(
+                        "INSERT INTO maintenance_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            log.id,
+                            log.item_id,
+                            log.item_type.value,
+                            log.log_type.value,
+                            int(log.date.timestamp()),
+                            log.details,
+                            log.ammo_count,
+                            log.photo_path,
+                        ),
+                    )
+
+                # CORROSIVE_AMMO log
+                if "corrosive" in ammo_type.lower():
+                    log = MaintenanceLog(
+                        id=str(uuid.uuid4()),
+                        item_id=firearm_id,
+                        item_type=GearCategory.FIREARM,
+                        log_type=MaintenanceType.CORROSIVE_AMMO,
+                        date=datetime.now(),
+                        details=f"Fired corrosive ammo ({ammo_type})",
+                    )
+                    cursor.execute(
+                        "INSERT INTO maintenance_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            log.id,
+                            log.item_id,
+                            log.item_type.value,
+                            log.log_type.value,
+                            int(log.date.timestamp()),
+                            log.details,
+                            log.ammo_count,
+                            log.photo_path,
+                        ),
+                    )
+
+                # LEAD_AMMO log
+                if "lead" in ammo_type.lower():
+                    log = MaintenanceLog(
+                        id=str(uuid.uuid4()),
+                        item_id=firearm_id,
+                        item_type=GearCategory.FIREARM,
+                        log_type=MaintenanceType.LEAD_AMMO,
+                        date=datetime.now(),
+                        details=f"Fired lead ammo ({ammo_type})",
+                    )
+                    cursor.execute(
+                        "INSERT INTO maintenance_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            log.id,
+                            log.item_id,
+                            log.item_type.value,
+                            log.log_type.value,
+                            int(log.date.timestamp()),
+                            log.details,
+                            log.ammo_count,
+                            log.photo_path,
+                        ),
+                    )
+
+        conn.commit()
+        conn.close()
+
     # -------- EXPORT METHODS --------
 
     def export_full_inventory_csv(self, output_path: Path) -> None:
