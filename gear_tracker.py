@@ -23,6 +23,11 @@ class MaintenanceType(Enum):
     ZEROING = "ZEROING"
     HUNTING = "HUNTING"
     INSPECTION = "INSPECTION"
+    FIRED_ROUNDS = "FIRED_ROUNDS"
+    OILING = "OILING"
+    RAIN_EXPOSURE = "RAIN_EXPOSURE"
+    CORROSIVE_AMMO = "CORROSIVE_AMMO"
+    LEAD_AMMO = "LEAD_AMMO"
 
 
 class CheckoutStatus(Enum):
@@ -71,6 +76,12 @@ class Firearm:
     trust_name: str = ""
     # Transfer field:
     transfer_status: TransferStatus = TransferStatus.OWNED
+    # Maintenance tracking:
+    rounds_fired: int = 0
+    clean_interval_rounds: int = 500
+    oil_interval_days: int = 90
+    needs_maintenance: bool = False
+    maintenance_conditions: str = ""
 
 
 @dataclass
@@ -179,9 +190,46 @@ class Attachment:
     purchase_date: datetime | None
     serial_number: str = ""
     mounted_on_firearm_id: str | None = None
-    mount_postion: str = ""  # top rail, scout mount, etc.
+    mount_position: str = ""  # top rail, scout mount, etc.
     zero_distance_yards: int | None = None
     zero_notes: str = ""
+    notes: str = ""
+
+
+@dataclass
+class ReloadBatch:
+    id: str
+    cartridge: str
+    firearm_id: str | None
+    date_created: datetime
+
+    bullet_maker: str
+    bullet_model: str
+    bullet_weight_gr: int | None
+
+    powder_name: str
+    powder_charge_gr: float | None
+    powder_lot: str = ""
+
+    primer_maker: str = ""
+    primer_type: str = ""
+
+    case_brand: str = ""
+    case_times_fired: int | None = None
+    case_prep_notes: str = ""
+
+    coal_in: float | None = None
+    crimp_style: str = ""
+
+    test_date: datetime | None = None
+    avg_velocity: int | None = None
+    es: int | None = None
+    sd: int | None = None
+    group_size_inches: float | None = None
+    group_distance_yards: int | None = None
+
+    intended_use: str = ""
+    status: str = "WORKUP"
     notes: str = ""
 
 
@@ -334,13 +382,54 @@ class GearRepository:
                 serial_number TEXT,
                 purchase_date INTEGER,
                 mounted_on_firearm_id TEXT,
-                mount_postion TEXT,
+                mount_position TEXT,
                 zero_distance_yards INTEGER,
                 zero_notes TEXT,
                 notes TEXT,
                 FOREIGN KEY(mounted_on_firearm_id) REFERENCES firearms(id)
             )
         """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS reload_batches (
+                id TEXT PRIMARY KEY,
+                cartridge TEXT NOT NULL,
+                firearm_id TEXT,
+                date_created INTEGER NOT NULL,
+
+                bullet_maker TEXT,
+                bullet_model TEXT,
+                bullet_weight_gr INTEGER,
+
+                powder_name TEXT,
+                powder_charge_gr REAL,
+                powder_lot TEXT,
+
+                primer_maker TEXT,
+                primer_type TEXT,
+
+                case_brand TEXT,
+                case_times_fired INTEGER,
+                case_prep_notes TEXT,
+
+                coal_in REAL,
+                crimp_style TEXT,
+
+                test_date INTEGER,
+                avg_velocity INTEGER,
+                es INTEGER,
+                sd INTEGER,
+                group_size_inches REAL,
+                group_distance_yards INTEGER,
+
+                intended_use TEXT,
+                status TEXT,
+                notes TEXT,
+
+                FOREIGN KEY(firearm_id) REFERENCES firearms(id)
+            )
+        """)
+
         # fixing maintenance_logs table
         cursor.execute("PRAGMA table_info(maintenance_logs)")
         maint_columns = {row[1] for row in cursor.fetchall()}
@@ -375,6 +464,11 @@ class GearRepository:
                 ("barrel_length", "TEXT", ""),
                 ("trust_name", "TEXT", ""),
                 ("transfer_status", "TEXT", "OWNED"),
+                ("rounds_fired", "INTEGER", 0),
+                ("clean_interval_rounds", "INTEGER", 500),
+                ("oil_interval_days", "INTEGER", 90),
+                ("needs_maintenance", "INTEGER", 0),
+                ("maintenance_conditions", "TEXT", ""),
             ],
             "soft_gear": [
                 ("status", "TEXT", "AVAILABLE"),
@@ -418,7 +512,7 @@ class GearRepository:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO firearms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO firearms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 firearm.id,
                 firearm.name,
@@ -434,6 +528,11 @@ class GearRepository:
                 firearm.barrel_length,
                 firearm.trust_name,
                 firearm.transfer_status.value,
+                firearm.rounds_fired,
+                firearm.clean_interval_rounds,
+                firearm.oil_interval_days,
+                1 if firearm.needs_maintenance else 0,
+                firearm.maintenance_conditions,
             ),
         )
         conn.commit()
@@ -463,6 +562,11 @@ class GearRepository:
                 form_type=row[10] if len(row) > 10 else "",
                 barrel_length=row[11] if len(row) > 11 else "",
                 trust_name=row[12] if len(row) > 12 else "",
+                rounds_fired=row[13] if len(row) > 13 else 0,
+                clean_interval_rounds=row[14] if len(row) > 14 else 500,
+                oil_interval_days=row[15] if len(row) > 15 else 90,
+                needs_maintenance=bool(row[16]) if len(row) > 16 else False,
+                maintenance_conditions=row[17] if len(row) > 17 else "",
             )
             for row in rows
         ]
@@ -485,15 +589,148 @@ class GearRepository:
         conn.commit()
         conn.close()
 
-    def update_firearm(self, firearm_id: str) -> None:
+    def update_firearm_rounds(self, firearm_id: str, rounds: int) -> None:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        # delete releated logs
-        cursor.execute("DELETE FROM maintenance_logs WHERE item_id = ?", (firearm_id,))
-        # delete checkouts
-        cursor.execute("DELETE FROM checkouts WHERE item_id = ?", (firearm_id,))
-        # delete the firearm
-        cursor.execute("DELETE FROM firearms WHERE id = ?", (firearm_id,))
+
+        cursor.execute(
+            "SELECT rounds_fired, clean_interval_rounds FROM firearms WHERE id = ?",
+            (firearm_id,),
+        )
+        result = cursor.fetchone()
+
+        if not result:
+            conn.close()
+            return
+
+        current_rounds, clean_interval = result
+        new_rounds = current_rounds + rounds
+
+        cursor.execute(
+            "UPDATE firearms SET rounds_fired = ? WHERE id = ?",
+            (new_rounds, firearm_id),
+        )
+
+        if clean_interval and new_rounds >= clean_interval:
+            cursor.execute(
+                "UPDATE firearms SET needs_maintenance = 1 WHERE id = ?",
+                (firearm_id,),
+            )
+
+        conn.commit()
+        conn.close()
+
+    def get_maintenance_status(self, firearm_id: str) -> dict:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                f.rounds_fired,
+                f.clean_interval_rounds,
+                f.oil_interval_days,
+                f.needs_maintenance,
+                f.maintenance_conditions,
+                MAX(m.date) as last_clean_date
+            FROM firearms f
+            LEFT JOIN maintenance_logs m ON f.id = m.item_id
+                AND m.log_type = 'CLEANING'
+            WHERE f.id = ?
+            GROUP BY f.id
+            """,
+            (firearm_id,),
+        )
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return {"needs_maintenance": False, "reasons": []}
+
+        (
+            rounds_fired,
+            clean_interval,
+            oil_interval,
+            needs_maintenance,
+            maintenance_conditions,
+            last_clean_date,
+        ) = row
+
+        reasons = []
+
+        if clean_interval and rounds_fired >= clean_interval:
+            reasons.append(
+                f"Rounds fired ({rounds_fired}) exceeds clean interval ({clean_interval})"
+            )
+
+        if last_clean_date:
+            days_since_clean = (datetime.now() - last_clean_date).days
+            if oil_interval and days_since_clean >= oil_interval:
+                reasons.append(
+                    f"Last cleaned {days_since_clean} days ago (interval: {oil_interval} days)"
+                )
+
+        if maintenance_conditions:
+            reasons.extend(maintenance_conditions.split(","))
+
+        status = needs_maintenance or len(reasons) > 0
+
+        return {
+            "needs_maintenance": status,
+            "rounds_fired": rounds_fired,
+            "last_clean_date": last_clean_date,
+            "reasons": reasons,
+        }
+
+    def mark_maintenance_done(
+        self, firearm_id: str, maintenance_type: MaintenanceType, details: str = ""
+    ) -> None:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT rounds_fired, clean_interval_rounds FROM firearms WHERE id = ?",
+            (firearm_id,),
+        )
+        result = cursor.fetchone()
+
+        if not result:
+            conn.close()
+            return
+
+        current_rounds, clean_interval = result
+
+        if maintenance_type == MaintenanceType.CLEANING:
+            new_rounds = 0
+            cursor.execute(
+                "UPDATE firearms SET rounds_fired = ?, needs_maintenance = 0 WHERE id = ?",
+                (new_rounds, firearm_id),
+            )
+
+        log = MaintenanceLog(
+            id=str(uuid.uuid4()),
+            item_id=firearm_id,
+            item_type=GearCategory.FIREARM,
+            log_type=maintenance_type,
+            date=datetime.now(),
+            details=details,
+        )
+
+        cursor.execute(
+            "INSERT INTO maintenance_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                log.id,
+                log.item_id,
+                log.item_type.value,
+                log.log_type.value,
+                int(log.date.timestamp()),
+                log.details,
+                log.ammo_count,
+                log.photo_path,
+            ),
+        )
+
         conn.commit()
         conn.close()
 
@@ -514,7 +751,7 @@ class GearRepository:
                 if attachment.purchase_date
                 else None,
                 attachment.mounted_on_firearm_id,
-                attachment.mount_postion,
+                attachment.mount_position,
                 attachment.zero_distance_yards,
                 attachment.zero_notes,
                 attachment.notes,
@@ -539,7 +776,7 @@ class GearRepository:
                 serial_number=row[5] or "",
                 purchase_date=datetime.fromtimestamp(row[6]) if row[6] else None,
                 mounted_on_firearm_id=row[7],
-                mount_postion=row[8] or "",
+                mount_position=row[8] or "",
                 zero_distance_yards=row[9],
                 zero_notes=row[10] or "",
                 notes=row[11] or "",
@@ -566,7 +803,7 @@ class GearRepository:
                 serial_number=row[5] or "",
                 purchase_date=datetime.fromtimestamp(row[6]) if row[6] else None,
                 mounted_on_firearm_id=row[7],
-                mount_postion=row[8] or "",
+                mount_position=row[8] or "",
                 zero_distance_yards=row[9],
                 zero_notes=row[10] or "",
                 notes=row[11] or "",
@@ -580,7 +817,7 @@ class GearRepository:
         cursor.execute(
             """
         UPDATE attachments
-        SET name = ?, category = ?, brand = ?, model = ?, serial_number = ?, purchase_date = ?, mounted_on_firearm_id = ?, mount_postion = ?, zero_distance_yards = ?, zero_notes = ?, notes = ?
+        SET name = ?, category = ?, brand = ?, model = ?, serial_number = ?, purchase_date = ?, mounted_on_firearm_id = ?, mount_position = ?, zero_distance_yards = ?, zero_notes = ?, notes = ?
         WHERE id = ?
         """,
             (
@@ -593,7 +830,7 @@ class GearRepository:
                 if attachment.purchase_date
                 else None,
                 attachment.mounted_on_firearm_id,
-                attachment.mount_postion,
+                attachment.mount_position,
                 attachment.zero_distance_yards,
                 attachment.zero_notes,
                 attachment.notes,
@@ -603,7 +840,7 @@ class GearRepository:
         conn.commit()
         conn.close()
 
-    def update_attachment(self, attachment_id: str) -> None:
+    def delete_attachment(self, attachment_id: str) -> None:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
@@ -1222,6 +1459,201 @@ class GearRepository:
         result = cursor.fetchone()
         conn.close()
         return datetime.fromtimestamp(result[0]) if result else None
+
+    # -------- RELOAD BATCH METHODS --------
+
+    def add_reload_batch(self, batch: ReloadBatch) -> None:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO reload_batches VALUES (
+                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?,
+                ?, ?, ?,
+                ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?
+            )
+            """,
+            (
+                batch.id,
+                batch.cartridge,
+                batch.firearm_id,
+                int(batch.date_created.timestamp()),
+                batch.bullet_maker,
+                batch.bullet_model,
+                batch.bullet_weight_gr,
+                batch.powder_name,
+                batch.powder_charge_gr,
+                batch.powder_lot,
+                batch.primer_maker,
+                batch.primer_type,
+                batch.case_brand,
+                batch.case_times_fired,
+                batch.case_prep_notes,
+                batch.coal_in,
+                batch.crimp_style,
+                int(batch.test_date.timestamp()) if batch.test_date else None,
+                batch.avg_velocity,
+                batch.es,
+                batch.sd,
+                batch.group_size_inches,
+                batch.group_distance_yards,
+                batch.intended_use,
+                batch.status,
+                batch.notes,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def update_reload_batch(self, batch: ReloadBatch) -> None:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE reload_batches SET
+                cartridge = ?, firearm_id = ?, date_created = ?,
+                bullet_maker = ?, bullet_model = ?, bullet_weight_gr = ?,
+                powder_name = ?, powder_charge_gr = ?, powder_lot = ?,
+                primer_maker = ?, primer_type = ?,
+                case_brand = ?, case_times_fired = ?, case_prep_notes = ?,
+                coal_in = ?, crimp_style = ?,
+                test_date = ?, avg_velocity = ?, es = ?, sd = ?,
+                group_size_inches = ?, group_distance_yards = ?,
+                intended_use = ?, status = ?, notes = ?
+            WHERE id = ?
+            """,
+            (
+                batch.cartridge,
+                batch.firearm_id,
+                int(batch.date_created.timestamp()),
+                batch.bullet_maker,
+                batch.bullet_model,
+                batch.bullet_weight_gr,
+                batch.powder_name,
+                batch.powder_charge_gr,
+                batch.powder_lot,
+                batch.primer_maker,
+                batch.primer_type,
+                batch.case_brand,
+                batch.case_times_fired,
+                batch.case_prep_notes,
+                batch.coal_in,
+                batch.crimp_style,
+                int(batch.test_date.timestamp()) if batch.test_date else None,
+                batch.avg_velocity,
+                batch.es,
+                batch.sd,
+                batch.group_size_inches,
+                batch.group_distance_yards,
+                batch.intended_use,
+                batch.status,
+                batch.notes,
+                batch.id,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_all_reload_batches(
+        self,
+        cartridge: str | None = None,
+        firearm_id: str | None = None,
+    ) -> list[ReloadBatch]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        query = "SELECT * FROM reload_batches"
+        params: list = []
+        clauses: list[str] = []
+
+        if cartridge:
+            clauses.append("cartridge = ?")
+            params.append(cartridge)
+        if firearm_id:
+            clauses.append("firearm_id = ?")
+            params.append(firearm_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY date_created DESC"
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+
+        batches: list[ReloadBatch] = []
+        for row in rows:
+            (
+                id_,
+                cartridge,
+                firearm_id,
+                date_created,
+                bullet_maker,
+                bullet_model,
+                bullet_weight_gr,
+                powder_name,
+                powder_charge_gr,
+                powder_lot,
+                primer_maker,
+                primer_type,
+                case_brand,
+                case_times_fired,
+                case_prep_notes,
+                coal_in,
+                crimp_style,
+                test_date,
+                avg_velocity,
+                es,
+                sd,
+                group_size_inches,
+                group_distance_yards,
+                intended_use,
+                status,
+                notes,
+            ) = row
+
+            batches.append(
+                ReloadBatch(
+                    id=id_,
+                    cartridge=cartridge or "",
+                    firearm_id=firearm_id,
+                    date_created=datetime.fromtimestamp(date_created),
+                    bullet_maker=bullet_maker or "",
+                    bullet_model=bullet_model or "",
+                    bullet_weight_gr=bullet_weight_gr,
+                    powder_name=powder_name or "",
+                    powder_charge_gr=powder_charge_gr,
+                    powder_lot=powder_lot or "",
+                    primer_maker=primer_maker or "",
+                    primer_type=primer_type or "",
+                    case_brand=case_brand or "",
+                    case_times_fired=case_times_fired,
+                    case_prep_notes=case_prep_notes or "",
+                    coal_in=coal_in,
+                    crimp_style=crimp_style or "",
+                    test_date=datetime.fromtimestamp(test_date) if test_date else None,
+                    avg_velocity=avg_velocity,
+                    es=es,
+                    sd=sd,
+                    group_size_inches=group_size_inches,
+                    group_distance_yards=group_distance_yards,
+                    intended_use=intended_use or "",
+                    status=status or "WORKUP",
+                    notes=notes or "",
+                )
+            )
+        return batches
+
+    def delete_reload_batch(self, batch_id: str) -> None:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM reload_batches WHERE id = ?", (batch_id,))
+        conn.commit()
+        conn.close()
 
     # -------- EXPORT METHODS --------
 

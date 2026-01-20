@@ -40,7 +40,9 @@ from gear_tracker import (
     NFAItemType,
     NFAFirearmType,
     TransferStatus,
+    Transfer,
     Attachment,
+    ReloadBatch,
 )
 
 
@@ -61,6 +63,7 @@ class GearTrackerApp(QMainWindow):
         # Create tabs
         self.tabs.addTab(self.create_firearms_tab(), "🔫 Firearms")
         self.tabs.addTab(self.create_attachments_tab(), "🔧 Attachments")
+        self.tabs.addTab(self.create_reloading_tab(), "🧪 Reloading")
         self.tabs.addTab(self.create_soft_gear_tab(), "🎒 Soft Gear")
         self.tabs.addTab(self.create_consumables_tab(), "📦 Consumables")
         self.tabs.addTab(self.create_checkouts_tab(), "📋 Checkouts")
@@ -77,9 +80,9 @@ class GearTrackerApp(QMainWindow):
         layout = QVBoxLayout()
 
         self.firearm_table = QTableWidget()
-        self.firearm_table.setColumnCount(6)
+        self.firearm_table.setColumnCount(7)
         self.firearm_table.setHorizontalHeaderLabels(
-            ["Name", "Caliber", "Serial", "Status", "Last Cleaned", "Notes"]
+            ["Name", "Caliber", "Serial", "Status", "Rounds", "Last Cleaned", "Notes"]
         )
         self.firearm_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
@@ -129,16 +132,39 @@ class GearTrackerApp(QMainWindow):
             status_item = QTableWidgetItem(fw.status.value)
             if fw.status == CheckoutStatus.CHECKED_OUT:
                 status_item.setBackground(QColor(255, 200, 200))
+            if fw.needs_maintenance:
+                status_item.setBackground(QColor(255, 100, 100))
+                status_item.setForeground(QColor(255, 255, 255))
             self.firearm_table.setItem(i, 3, status_item)
+
+            rounds_item = QTableWidgetItem(str(fw.rounds_fired))
+            maint_status = self.repo.get_maintenance_status(fw.id)
+            if maint_status["needs_maintenance"]:
+                rounds_item.setBackground(QColor(255, 150, 150))
+                rounds_item.setToolTip("\n".join(maint_status["reasons"]))
+            else:
+                if fw.clean_interval_rounds:
+                    pct = fw.rounds_fired / fw.clean_interval_rounds
+                    if pct >= 0.8:
+                        rounds_item.setBackground(QColor(255, 255, 150))
+                        rounds_item.setToolTip(
+                            f"{int(pct * 100)}% to clean interval ({fw.clean_interval_rounds} rounds)"
+                        )
+            self.firearm_table.setItem(i, 4, rounds_item)
 
             last_clean = self.repo.last_cleaning_date(fw.id)
             clean_text = last_clean.strftime("%Y-%m-%d") if last_clean else "Never"
             clean_item = QTableWidgetItem(clean_text)
-            if last_clean and (datetime.now() - last_clean).days > 90:
-                clean_item.setBackground(QColor(255, 255, 150))  # Yellow warning
-            self.firearm_table.setItem(i, 4, clean_item)
+            if fw.oil_interval_days and last_clean:
+                days_since_clean = (datetime.now() - last_clean).days
+                if days_since_clean >= fw.oil_interval_days:
+                    clean_item.setBackground(QColor(255, 200, 100))
+                    clean_item.setToolTip(
+                        f"Needs oil ({days_since_clean} days since last clean, interval: {fw.oil_interval_days})"
+                    )
+            self.firearm_table.setItem(i, 5, clean_item)
 
-            self.firearm_table.setItem(i, 5, QTableWidgetItem(fw.notes))
+            self.firearm_table.setItem(i, 6, QTableWidgetItem(fw.notes))
 
     def delete_selected_firearm(self):
         row = self.firearm_table.currentRow()
@@ -336,6 +362,18 @@ class GearTrackerApp(QMainWindow):
         serial_input = QLineEdit()
         layout.addRow("Serial #:", serial_input)
 
+        clean_interval_spin = QSpinBox()
+        clean_interval_spin.setRange(0, 10000)
+        clean_interval_spin.setValue(500)
+        clean_interval_spin.setSuffix(" rounds")
+        layout.addRow("Clean Interval:", clean_interval_spin)
+
+        oil_interval_spin = QSpinBox()
+        oil_interval_spin.setRange(0, 365)
+        oil_interval_spin.setValue(90)
+        oil_interval_spin.setSuffix(" days")
+        layout.addRow("Oil Interval:", oil_interval_spin)
+
         notes_input = QTextEdit()
         notes_input.setMaximumHeight(80)
         layout.addRow("Notes:", notes_input)
@@ -353,6 +391,9 @@ class GearTrackerApp(QMainWindow):
                 serial_number=serial_input.text(),
                 purchase_date=datetime.now(),
                 notes=notes_input.toPlainText(),
+                rounds_fired=0,
+                clean_interval_rounds=clean_interval_spin.value(),
+                oil_interval_days=oil_interval_spin.value(),
             )
             self.repo.add_firearm(firearm)
             self.refresh_firearms()
@@ -860,7 +901,7 @@ class GearTrackerApp(QMainWindow):
             QMessageBox.warning(self, "Error", "Select a consumable to delete.")
             return
 
-        consumables = self.rep.get_all_consumables()
+        consumables = self.repo.get_all_consumables()
         selected = consumables[row]
 
         reply = QMessageBox.question(
@@ -1734,9 +1775,415 @@ class GearTrackerApp(QMainWindow):
         dialog.setLayout(layout)
         dialog.exec()
 
+    # ============== RELOADING TAB ==============
+
+    def create_reloading_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout()
+
+        info_label = QLabel(
+            "Personal reload log: batches of handloads with components and results."
+        )
+        info_label.setStyleSheet("color: #888; font-style: italic; padding: 5px;")
+        layout.addWidget(info_label)
+
+        self.reload_table = QTableWidget()
+        self.reload_table.setColumnCount(8)
+        self.reload_table.setHorizontalHeaderLabels(
+            [
+                "Date",
+                "Cartridge",
+                "Firearm",
+                "Bullet",
+                "Powder/Charge",
+                "COAL",
+                "Vel/Group",
+                "Status",
+            ]
+        )
+        self.reload_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        layout.addWidget(self.reload_table)
+
+        btn_layout = QHBoxLayout()
+
+        add_btn = QPushButton("Add Batch")
+        add_btn.clicked.connect(self.open_add_reload_batch_dialog)
+        btn_layout.addWidget(add_btn)
+
+        duplicate_btn = QPushButton("Duplicate Batch")
+        duplicate_btn.clicked.connect(self.duplicate_reload_batch)
+        btn_layout.addWidget(duplicate_btn)
+
+        log_btn = QPushButton("Log Results")
+        log_btn.clicked.connect(self.open_log_reload_results_dialog)
+        btn_layout.addWidget(log_btn)
+
+        delete_btn = QPushButton("🗑️ Delete")
+        delete_btn.setStyleSheet("background-color: #6B2020;")
+        delete_btn.clicked.connect(self.delete_selected_reload_batch)
+        btn_layout.addWidget(delete_btn)
+
+        layout.addLayout(btn_layout)
+        widget.setLayout(layout)
+        return widget
+
+    def refresh_reloads(self):
+        self.reload_table.setRowCount(0)
+        batches = self.repo.get_all_reload_batches()
+        firearms = {f.id: f for f in self.repo.get_all_firearms()}
+
+        for i, b in enumerate(batches):
+            self.reload_table.insertRow(i)
+
+            self.reload_table.setItem(
+                i, 0, QTableWidgetItem(b.date_created.strftime("%Y-%m-%d"))
+            )
+            self.reload_table.setItem(i, 1, QTableWidgetItem(b.cartridge))
+
+            fw_name = ""
+            if b.firearm_id and b.firearm_id in firearms:
+                fw_name = firearms[b.firearm_id].name
+            self.reload_table.setItem(i, 2, QTableWidgetItem(fw_name))
+
+            bullet_text = f"{b.bullet_weight_gr or ''}gr {b.bullet_maker} {b.bullet_model}".strip()
+            self.reload_table.setItem(i, 3, QTableWidgetItem(bullet_text))
+
+            powder_text = b.powder_name
+            if b.powder_charge_gr:
+                powder_text = f"{b.powder_charge_gr} gr {b.powder_name}"
+            self.reload_table.setItem(i, 4, QTableWidgetItem(powder_text))
+
+            coal_text = f'{b.coal_in:.3f}"' if b.coal_in else ""
+            self.reload_table.setItem(i, 5, QTableWidgetItem(coal_text))
+
+            vel_group = ""
+            if b.avg_velocity:
+                vel_group = f"{b.avg_velocity} fps"
+            if b.group_size_inches and b.group_distance_yards:
+                group_str = f'{b.group_size_inches}" @ {b.group_distance_yards} yd'
+                vel_group = f"{vel_group}, {group_str}" if vel_group else group_str
+            self.reload_table.setItem(i, 6, QTableWidgetItem(vel_group))
+
+            self.reload_table.setItem(i, 7, QTableWidgetItem(b.status))
+
+    def _get_selected_reload_batch(self) -> ReloadBatch | None:
+        row = self.reload_table.currentRow()
+        if row < 0:
+            return None
+        batches = self.repo.get_all_reload_batches()
+        if row >= len(batches):
+            return None
+        return batches[row]
+
+    def open_add_reload_batch_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Reload Batch")
+        dialog.setMinimumWidth(500)
+
+        layout = QFormLayout()
+
+        cartridge_input = QLineEdit()
+        cartridge_input.setPlaceholderText(".45-70 Govt, .45 ACP, etc.")
+        layout.addRow("Cartridge*:", cartridge_input)
+
+        firearms = self.repo.get_all_firearms()
+        firearm_combo = QComboBox()
+        firearm_combo.addItem("Unassigned")
+        for fw in firearms:
+            firearm_combo.addItem(fw.name)
+        layout.addRow("Firearm:", firearm_combo)
+
+        bullet_maker_input = QLineEdit()
+        layout.addRow("Bullet maker:", bullet_maker_input)
+
+        bullet_model_input = QLineEdit()
+        layout.addRow("Bullet model:", bullet_model_input)
+
+        bullet_weight_spin = QSpinBox()
+        bullet_weight_spin.setRange(0, 1000)
+        layout.addRow("Bullet weight (gr):", bullet_weight_spin)
+
+        powder_name_input = QLineEdit()
+        layout.addRow("Powder name:", powder_name_input)
+
+        powder_charge_input = QLineEdit()
+        powder_charge_input.setPlaceholderText("e.g., 54.0")
+        layout.addRow("Charge (gr):", powder_charge_input)
+
+        powder_lot_input = QLineEdit()
+        layout.addRow("Powder lot:", powder_lot_input)
+
+        primer_maker_input = QLineEdit()
+        layout.addRow("Primer maker:", primer_maker_input)
+
+        primer_type_input = QLineEdit()
+        primer_type_input.setPlaceholderText("LP, LPM, LR, etc.")
+        layout.addRow("Primer type:", primer_type_input)
+
+        case_brand_input = QLineEdit()
+        layout.addRow("Case brand:", case_brand_input)
+
+        case_times_spin = QSpinBox()
+        case_times_spin.setRange(0, 50)
+        layout.addRow("Times fired:", case_times_spin)
+
+        case_prep_input = QTextEdit()
+        case_prep_input.setMaximumHeight(60)
+        case_prep_input.setPlaceholderText("Trimmed, annealed, neck turned, etc.")
+        layout.addRow("Case prep:", case_prep_input)
+
+        coal_input = QLineEdit()
+        coal_input.setPlaceholderText("e.g., 2.535")
+        layout.addRow("COAL (in):", coal_input)
+
+        crimp_input = QLineEdit()
+        crimp_input.setPlaceholderText("roll, taper, none")
+        layout.addRow("Crimp:", crimp_input)
+
+        intended_use_combo = QComboBox()
+        intended_use_combo.addItems(["DEFENSE", "HUNTING", "COMPETITION", "TRAINING"])
+        layout.addRow("Intended Use:", intended_use_combo)
+
+        notes_input = QTextEdit()
+        notes_input.setMaximumHeight(80)
+        layout.addRow("Notes:", notes_input)
+
+        save_btn = QPushButton("Save")
+
+        def save():
+            if not cartridge_input.text():
+                QMessageBox.warning(dialog, "Error", "Cartridge is required")
+                return
+
+            firearm_id = None
+            idx = firearm_combo.currentIndex()
+            if idx > 0:
+                firearm_id = firearms[idx - 1].id
+
+            try:
+                charge = (
+                    float(powder_charge_input.text())
+                    if powder_charge_input.text()
+                    else None
+                )
+            except ValueError:
+                QMessageBox.warning(
+                    dialog, "Error", "Charge must be a number (e.g., 54.0)"
+                )
+                return
+
+            try:
+                coal = float(coal_input.text()) if coal_input.text() else None
+            except ValueError:
+                QMessageBox.warning(
+                    dialog, "Error", "COAL must be a number (e.g., 2.535)"
+                )
+                return
+
+            batch = ReloadBatch(
+                id=str(uuid.uuid4()),
+                cartridge=cartridge_input.text(),
+                firearm_id=firearm_id,
+                date_created=datetime.now(),
+                bullet_maker=bullet_maker_input.text(),
+                bullet_model=bullet_model_input.text(),
+                bullet_weight_gr=bullet_weight_spin.value() or None,
+                powder_name=powder_name_input.text(),
+                powder_charge_gr=charge,
+                powder_lot=powder_lot_input.text(),
+                primer_maker=primer_maker_input.text(),
+                primer_type=primer_type_input.text(),
+                case_brand=case_brand_input.text(),
+                case_times_fired=case_times_spin.value() or None,
+                case_prep_notes=case_prep_input.toPlainText(),
+                coal_in=coal,
+                crimp_style=crimp_input.text(),
+                intended_use=intended_use_combo.currentText(),
+                status="WORKUP",
+                notes=notes_input.toPlainText(),
+            )
+            self.repo.add_reload_batch(batch)
+            self.refresh_reloads()
+            dialog.accept()
+
+        save_btn.clicked.connect(save)
+        layout.addRow(save_btn)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def duplicate_reload_batch(self):
+        batch = self._get_selected_reload_batch()
+        if not batch:
+            QMessageBox.warning(self, "Error", "Select a batch to duplicate")
+            return
+
+        new_batch = ReloadBatch(
+            id=str(uuid.uuid4()),
+            cartridge=batch.cartridge,
+            firearm_id=batch.firearm_id,
+            date_created=datetime.now(),
+            bullet_maker=batch.bullet_maker,
+            bullet_model=batch.bullet_model,
+            bullet_weight_gr=batch.bullet_weight_gr,
+            powder_name=batch.powder_name,
+            powder_charge_gr=batch.powder_charge_gr,
+            powder_lot=batch.powder_lot,
+            primer_maker=batch.primer_maker,
+            primer_type=batch.primer_type,
+            case_brand=batch.case_brand,
+            case_times_fired=batch.case_times_fired,
+            case_prep_notes=batch.case_prep_notes,
+            coal_in=batch.coal_in,
+            crimp_style=batch.crimp_style,
+            test_date=None,
+            avg_velocity=None,
+            es=None,
+            sd=None,
+            group_size_inches=None,
+            group_distance_yards=None,
+            intended_use=batch.intended_use,
+            status="WORKUP",
+            notes=f"(DUP from {batch.date_created.strftime('%Y-%m-%d')}) {batch.notes}",
+        )
+        self.repo.add_reload_batch(new_batch)
+        self.refresh_reloads()
+        QMessageBox.information(
+            self,
+            "Duplicated",
+            f"'{batch.cartridge}' batch duplicated for further development.",
+        )
+
+    def open_log_reload_results_dialog(self):
+        batch = self._get_selected_reload_batch()
+        if not batch:
+            QMessageBox.warning(self, "Error", "Select a batch to log results for")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Log Results: {batch.cartridge}")
+        dialog.setMinimumWidth(400)
+
+        layout = QFormLayout()
+
+        test_date_edit = QDateEdit()
+        test_date_edit.setCalendarPopup(True)
+        test_date_edit.setDate(QDate.currentDate())
+        layout.addRow("Test date:", test_date_edit)
+
+        avg_vel_spin = QSpinBox()
+        avg_vel_spin.setRange(0, 10000)
+        layout.addRow("Avg velocity (fps):", avg_vel_spin)
+
+        es_spin = QSpinBox()
+        es_spin.setRange(0, 1000)
+        layout.addRow("ES:", es_spin)
+
+        sd_spin = QSpinBox()
+        sd_spin.setRange(0, 1000)
+        layout.addRow("SD:", sd_spin)
+
+        group_size_input = QLineEdit()
+        group_size_input.setPlaceholderText("e.g., 1.5")
+        layout.addRow("Group size (in):", group_size_input)
+
+        group_dist_spin = QSpinBox()
+        group_dist_spin.setRange(0, 1000)
+        group_dist_spin.setValue(100)
+        layout.addRow("Group distance (yd):", group_dist_spin)
+
+        status_combo = QComboBox()
+        status_combo.addItems(["WORKUP", "APPROVED", "REJECTED"])
+        status_combo.setCurrentText(batch.status or "WORKUP")
+        layout.addRow("Status:", status_combo)
+
+        notes_input = QTextEdit()
+        notes_input.setMaximumHeight(80)
+        notes_input.setPlainText(batch.notes or "")
+        layout.addRow("Notes:", notes_input)
+
+        save_btn = QPushButton("Save results")
+
+        def save():
+            try:
+                group_size = (
+                    float(group_size_input.text()) if group_size_input.text() else None
+                )
+            except ValueError:
+                QMessageBox.warning(
+                    dialog, "Error", "Group size must be a number (e.g., 1.5)"
+                )
+                return
+
+            test_dt = datetime(
+                test_date_edit.date().year(),
+                test_date_edit.date().month(),
+                test_date_edit.date().day(),
+            )
+
+            updated = ReloadBatch(
+                id=batch.id,
+                cartridge=batch.cartridge,
+                firearm_id=batch.firearm_id,
+                date_created=batch.date_created,
+                bullet_maker=batch.bullet_maker,
+                bullet_model=batch.bullet_model,
+                bullet_weight_gr=batch.bullet_weight_gr,
+                powder_name=batch.powder_name,
+                powder_charge_gr=batch.powder_charge_gr,
+                powder_lot=batch.powder_lot,
+                primer_maker=batch.primer_maker,
+                primer_type=batch.primer_type,
+                case_brand=batch.case_brand,
+                case_times_fired=batch.case_times_fired,
+                case_prep_notes=batch.case_prep_notes,
+                coal_in=batch.coal_in,
+                crimp_style=batch.crimp_style,
+                test_date=test_dt,
+                avg_velocity=avg_vel_spin.value() or None,
+                es=es_spin.value() or None,
+                sd=sd_spin.value() or None,
+                group_size_inches=group_size,
+                group_distance_yards=group_dist_spin.value() or None,
+                intended_use=batch.intended_use,
+                status=status_combo.currentText(),
+                notes=notes_input.toPlainText(),
+            )
+            self.repo.update_reload_batch(updated)
+            self.refresh_reloads()
+            dialog.accept()
+
+        save_btn.clicked.connect(save)
+        layout.addRow(save_btn)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def delete_selected_reload_batch(self):
+        batch = self._get_selected_reload_batch()
+        if not batch:
+            QMessageBox.warning(self, "Error", "Select a batch to delete")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Deletion",
+            f"Permanently delete reload batch '{batch.cartridge}' from log?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.repo.delete_reload_batch(batch.id)
+            self.refresh_reloads()
+            QMessageBox.information(
+                self, "Deleted", "Reload batch has been deleted from log."
+            )
+
     def refresh_all(self):
         self.refresh_firearms()
         self.refresh_attachments()
+        self.refresh_reloads()
         self.refresh_soft_gear()
         self.refresh_consumables()
         self.refresh_checkouts()
