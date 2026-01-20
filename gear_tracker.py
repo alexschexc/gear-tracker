@@ -169,6 +169,22 @@ class Transfer:
     notes: str = ""
 
 
+@dataclass
+class Attachment:
+    id: str
+    name: str
+    category: str  # optic, light, stock, rail, trigger, etc.
+    brand: str
+    model: str
+    purchase_date: datetime | None
+    serial_number: str = ""
+    mounted_on_firearm_id: str | None = None
+    mount_postion: str = ""  # top rail, scout mount, etc.
+    zero_distance_yards: int | None = None
+    zero_notes: str = ""
+    notes: str = ""
+
+
 # ============== REPOSITORY ==============
 
 
@@ -305,6 +321,24 @@ class GearRepository:
                 ffl_license TEXT,
                 notes TEXT,
                 FOREIGN KEY(firearm_id) REFERENCES firearms(id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS attachments (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                brand TEXT,
+                model TEXT,
+                serial_number TEXT,
+                purchase_date INTEGER,
+                mounted_on_firearm_id TEXT,
+                mount_postion TEXT,
+                zero_distance_yards INTEGER,
+                zero_notes TEXT,
+                notes TEXT,
+                FOREIGN KEY(mounted_on_firearm_id) REFERENCES firearms(id)
             )
         """)
         # fixing maintenance_logs table
@@ -460,6 +494,119 @@ class GearRepository:
         cursor.execute("DELETE FROM checkouts WHERE item_id = ?", (firearm_id,))
         # delete the firearm
         cursor.execute("DELETE FROM firearms WHERE id = ?", (firearm_id,))
+        conn.commit()
+        conn.close()
+
+    # -------- ATTACHMENT METHODS --------
+    def add_attachment(self, attachment: Attachment) -> None:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO attachments VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                attachment.id,
+                attachment.name,
+                attachment.category,
+                attachment.brand,
+                attachment.model,
+                attachment.serial_number,
+                int(attachment.purchase_date.timestamp())
+                if attachment.purchase_date
+                else None,
+                attachment.mounted_on_firearm_id,
+                attachment.mount_postion,
+                attachment.zero_distance_yards,
+                attachment.zero_notes,
+                attachment.notes,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_all_attachments(self) -> list[Attachment]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM attachments ORDER BY category, name")
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            Attachment(
+                id=row[0],
+                name=row[1],
+                category=row[2],
+                brand=row[3] or "",
+                model=row[4] or "",
+                serial_number=row[5] or "",
+                purchase_date=datetime.fromtimestamp(row[6]) if row[6] else None,
+                mounted_on_firearm_id=row[7],
+                mount_postion=row[8] or "",
+                zero_distance_yards=row[9],
+                zero_notes=row[10] or "",
+                notes=row[11] or "",
+            )
+            for row in rows
+        ]
+
+    def get_attachments_for_firearm(self, firearm_id: str) -> list[Attachment]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM attachments WHERE mounted_on_firearm_id = ? ORDER BY category, name",
+            (firearm_id,),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            Attachment(
+                id=row[0],
+                name=row[1],
+                category=row[2],
+                brand=row[3] or "",
+                model=row[4] or "",
+                serial_number=row[5] or "",
+                purchase_date=datetime.fromtimestamp(row[6]) if row[6] else None,
+                mounted_on_firearm_id=row[7],
+                mount_postion=row[8] or "",
+                zero_distance_yards=row[9],
+                zero_notes=row[10] or "",
+                notes=row[11] or "",
+            )
+            for row in rows
+        ]
+
+    def update_attachment(self, attachment: Attachment) -> None:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+        UPDATE attachments
+        SET name = ?, category = ?, brand = ?, model = ?, serial_number = ?, purchase_date = ?, mounted_on_firearm_id = ?, mount_postion = ?, zero_distance_yards = ?, zero_notes = ?, notes = ?
+        WHERE id = ?
+        """,
+            (
+                attachment.name,
+                attachment.category,
+                attachment.brand,
+                attachment.model,
+                attachment.serial_number,
+                int(attachment.purchase_date.timestamp())
+                if attachment.purchase_date
+                else None,
+                attachment.mounted_on_firearm_id,
+                attachment.mount_postion,
+                attachment.zero_distance_yards,
+                attachment.zero_notes,
+                attachment.notes,
+                attachment.id,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def update_attachment(self, attachment_id: str) -> None:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
         conn.commit()
         conn.close()
 

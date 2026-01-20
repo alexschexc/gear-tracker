@@ -40,6 +40,7 @@ from gear_tracker import (
     NFAItemType,
     NFAFirearmType,
     TransferStatus,
+    Attachment,
 )
 
 
@@ -59,6 +60,7 @@ class GearTrackerApp(QMainWindow):
 
         # Create tabs
         self.tabs.addTab(self.create_firearms_tab(), "🔫 Firearms")
+        self.tabs.addTab(self.create_attachments_tab(), "🔧 Attachments")
         self.tabs.addTab(self.create_soft_gear_tab(), "🎒 Soft Gear")
         self.tabs.addTab(self.create_consumables_tab(), "📦 Consumables")
         self.tabs.addTab(self.create_checkouts_tab(), "📋 Checkouts")
@@ -361,6 +363,279 @@ class GearTrackerApp(QMainWindow):
 
         dialog.setLayout(layout)
         dialog.exec()
+
+        # ============== ATTACHMENTS TAB ==============
+
+    def create_attachments_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout()
+
+        info_label = QLabel(
+            "Non‑regulated attachments: optics, lights, stocks, rails, triggers, etc."
+        )
+        info_label.setStyleSheet("color: #888; font-style: italic; padding: 5px;")
+        layout.addWidget(info_label)
+
+        self.attachment_table = QTableWidget()
+        self.attachment_table.setColumnCount(6)
+        self.attachment_table.setHorizontalHeaderLabels(
+            ["Name", "Category", "Brand/Model", "Mounted On", "Zero", "Notes"]
+        )
+        self.attachment_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        layout.addWidget(self.attachment_table)
+
+        btn_layout = QHBoxLayout()
+
+        add_btn = QPushButton("Add Attachment")
+        add_btn.clicked.connect(self.open_add_attachment_dialog)
+        btn_layout.addWidget(add_btn)
+
+        edit_btn = QPushButton("Edit / Reassign")
+        edit_btn.clicked.connect(self.open_edit_attachment_dialog)
+        btn_layout.addWidget(edit_btn)
+
+        delete_btn = QPushButton("🗑️ Delete")
+        delete_btn.setStyleSheet("background-color: #6B2020;")
+        delete_btn.clicked.connect(self.delete_selected_attachment)
+        btn_layout.addWidget(delete_btn)
+
+        layout.addLayout(btn_layout)
+        widget.setLayout(layout)
+        return widget
+
+    def refresh_attachments(self):
+        self.attachment_table.setRowCount(0)
+        attachments = self.repo.get_all_attachments()
+        firearms = {f.id: f for f in self.repo.get_all_firearms()}
+
+        for i, att in enumerate(attachments):
+            self.attachment_table.insertRow(i)
+            self.attachment_table.setItem(i, 0, QTableWidgetItem(att.name))
+            self.attachment_table.setItem(i, 1, QTableWidgetItem(att.category))
+            brand_model = f"{att.brand} {att.model}".strip()
+            self.attachment_table.setItem(i, 2, QTableWidgetItem(brand_model))
+
+            mounted_name = ""
+            if att.mounted_on_firearm_id and att.mounted_on_firearm_id in firearms:
+                fw = firearms[att.mounted_on_firearm_id]
+                mounted_name = fw.name
+                if att.mount_position:
+                    mounted_name += f" ({att.mount_position})"
+            self.attachment_table.setItem(i, 3, QTableWidgetItem(mounted_name))
+
+            zero_text = ""
+            if att.zero_distance_yards:
+                zero_text = f"{att.zero_distance_yards} yd"
+            self.attachment_table.setItem(i, 4, QTableWidgetItem(zero_text))
+
+            self.attachment_table.setItem(i, 5, QTableWidgetItem(att.notes or ""))
+
+    def _get_selected_attachment(self):
+        row = self.attachment_table.currentRow()
+        if row < 0:
+            return None
+
+        attachments = self.repo.get_all_attachments()
+        if row >= len(attachments):
+            return None
+        return attachments[row]
+
+    def open_add_attachment_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Attachment")
+        dialog.setMinimumWidth(400)
+
+        layout = QFormLayout()
+
+        name_input = QLineEdit()
+        layout.addRow("Name:", name_input)
+
+        category_input = QLineEdit()
+        category_input.setPlaceholderText("optic, light, stock, rail, trigger…")
+        layout.addRow("Category:", category_input)
+
+        brand_input = QLineEdit()
+        layout.addRow("Brand:", brand_input)
+
+        model_input = QLineEdit()
+        layout.addRow("Model:", model_input)
+
+        serial_input = QLineEdit()
+        layout.addRow("Serial #:", serial_input)
+
+        # Mounted on firearm
+        firearms = self.repo.get_all_firearms()
+        firearm_combo = QComboBox()
+        firearm_combo.addItem("Unassigned")
+        for fw in firearms:
+            firearm_combo.addItem(fw.name)
+        layout.addRow("Mounted on:", firearm_combo)
+
+        mount_pos_input = QLineEdit()
+        mount_pos_input.setPlaceholderText("e.g., top rail, scout mount")
+        layout.addRow("Mount position:", mount_pos_input)
+
+        zero_spin = QSpinBox()
+        zero_spin.setRange(0, 1000)
+        zero_spin.setValue(0)
+        layout.addRow("Zero distance (yd):", zero_spin)
+
+        zero_notes_input = QTextEdit()
+        zero_notes_input.setMaximumHeight(60)
+        layout.addRow("Zero notes:", zero_notes_input)
+
+        notes_input = QTextEdit()
+        notes_input.setMaximumHeight(60)
+        layout.addRow("Notes:", notes_input)
+
+        save_btn = QPushButton("Save")
+
+        def save():
+            if not name_input.text():
+                QMessageBox.warning(dialog, "Error", "Name is required")
+                return
+
+            mounted_id = None
+            idx = firearm_combo.currentIndex()
+            if idx > 0:
+                mounted_id = firearms[idx - 1].id
+
+            att = Attachment(
+                id=str(uuid.uuid4()),
+                name=name_input.text(),
+                category=category_input.text() or "other",
+                brand=brand_input.text(),
+                model=model_input.text(),
+                purchase_date=datetime.now(),
+                serial_number=serial_input.text(),
+                mounted_on_firearm_id=mounted_id,
+                mount_position=mount_pos_input.text(),
+                zero_distance_yards=zero_spin.value() or None,
+                zero_notes=zero_notes_input.toPlainText(),
+                notes=notes_input.toPlainText(),
+            )
+            self.repo.add_attachment(att)
+            self.refresh_attachments()
+            dialog.accept()
+
+        save_btn.clicked.connect(save)
+        layout.addRow(save_btn)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def open_edit_attachment_dialog(self):
+        selected = self._get_selected_attachment()
+        if not selected:
+            QMessageBox.warning(self, "Error", "Select an attachment to edit")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Edit Attachment: {selected.name}")
+        dialog.setMinimumWidth(400)
+
+        layout = QFormLayout()
+
+        name_input = QLineEdit(selected.name)
+        layout.addRow("Name:", name_input)
+
+        category_input = QLineEdit(selected.category)
+        layout.addRow("Category:", category_input)
+
+        brand_input = QLineEdit(selected.brand)
+        layout.addRow("Brand:", brand_input)
+
+        model_input = QLineEdit(selected.model)
+        layout.addRow("Model:", model_input)
+
+        serial_input = QLineEdit(selected.serial_number)
+        layout.addRow("Serial #:", serial_input)
+
+        firearms = self.repo.get_all_firearms()
+        firearm_combo = QComboBox()
+        firearm_combo.addItem("Unassigned")
+        current_index = 0
+        for i, fw in enumerate(firearms, start=1):
+            firearm_combo.addItem(fw.name)
+            if selected.mounted_on_firearm_id == fw.id:
+                current_index = i
+        firearm_combo.setCurrentIndex(current_index)
+        layout.addRow("Mounted on:", firearm_combo)
+
+        mount_pos_input = QLineEdit(selected.mount_position)
+        layout.addRow("Mount position:", mount_pos_input)
+
+        zero_spin = QSpinBox()
+        zero_spin.setRange(0, 1000)
+        zero_spin.setValue(selected.zero_distance_yards or 0)
+        layout.addRow("Zero distance (yd):", zero_spin)
+
+        zero_notes_input = QTextEdit()
+        zero_notes_input.setMaximumHeight(60)
+        zero_notes_input.setPlainText(selected.zero_notes or "")
+        layout.addRow("Zero notes:", zero_notes_input)
+
+        notes_input = QTextEdit()
+        notes_input.setMaximumHeight(60)
+        notes_input.setPlainText(selected.notes or "")
+        layout.addRow("Notes:", notes_input)
+
+        save_btn = QPushButton("Save changes")
+
+        def save():
+            if not name_input.text():
+                QMessageBox.warning(dialog, "Error", "Name is required")
+                return
+
+            mounted_id = None
+            idx = firearm_combo.currentIndex()
+            if idx > 0:
+                mounted_id = firearms[idx - 1].id
+
+            updated = Attachment(
+                id=selected.id,
+                name=name_input.text(),
+                category=category_input.text() or "other",
+                brand=brand_input.text(),
+                model=model_input.text(),
+                purchase_date=selected.purchase_date or datetime.now(),
+                serial_number=serial_input.text(),
+                mounted_on_firearm_id=mounted_id,
+                mount_position=mount_pos_input.text(),
+                zero_distance_yards=zero_spin.value() or None,
+                zero_notes=zero_notes_input.toPlainText(),
+                notes=notes_input.toPlainText(),
+            )
+            self.repo.update_attachment(updated)
+            self.refresh_attachments()
+            dialog.accept()
+
+        save_btn.clicked.connect(save)
+        layout.addRow(save_btn)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def delete_selected_attachment(self):
+        selected = self._get_selected_attachment()
+        if not selected:
+            QMessageBox.warning(self, "Error", "Select an attachment to delete")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Deletion",
+            f"Permanently delete attachment '{selected.name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.repo.delete_attachment(selected.id)
+            self.refresh_attachments()
+            QMessageBox.information(
+                self, "Deleted", f"Attachment '{selected.name}' has been deleted."
+            )
 
     # ============== SOFT GEAR TAB ==============
 
@@ -1461,6 +1736,7 @@ class GearTrackerApp(QMainWindow):
 
     def refresh_all(self):
         self.refresh_firearms()
+        self.refresh_attachments()
         self.refresh_soft_gear()
         self.refresh_consumables()
         self.refresh_checkouts()
