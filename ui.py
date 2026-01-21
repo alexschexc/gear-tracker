@@ -2349,10 +2349,18 @@ class GearTrackerApp(QMainWindow):
         )
         layout.addWidget(self.borrower_table)
 
+        btn_layout = QHBoxLayout()
+
         add_btn = QPushButton("Add Borrower")
         add_btn.clicked.connect(self.open_add_borrower_dialog)
-        layout.addWidget(add_btn)
+        btn_layout.addWidget(add_btn)
 
+        delete_btn = QPushButton("🗑️ Delete")
+        delete_btn.setStyleSheet("background-color: #6B2020;")
+        delete_btn.clicked.connect(self.delete_selected_borrower)
+        btn_layout.addWidget(delete_btn)
+
+        layout.addLayout(btn_layout)
         widget.setLayout(layout)
         return widget
 
