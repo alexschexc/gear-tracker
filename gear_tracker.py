@@ -2648,7 +2648,6 @@ class GearRepository:
         required = [
             "name",
             "nfa_type",
-            "manufacturer",
             "serial_number",
             "tax_stamp_id",
             "purchase_date",
@@ -2714,8 +2713,7 @@ class GearRepository:
 
     def validate_soft_gear_row(self, row: dict, row_num: int) -> list[ValidationError]:
         errors = []
-        required = ["name", "category", "brand", "purchase_date"]
-
+        required = ["name", "category", "purchase_date"]
         for field in required:
             if field not in row or not row[field]:
                 errors.append(
