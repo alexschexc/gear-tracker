@@ -272,6 +272,36 @@ class LoadoutCheckout:
     notes: str = ""
 
 
+@dataclass
+class ImportResult:
+    success: bool
+    total_rows: int
+    imported: int
+    skipped: int
+    overwritten: int
+    errors: list[str]
+    warnings: list[str]
+    entity_stats: dict[str, int]
+
+
+@dataclass
+class ValidationError:
+    row_number: int
+    entity_type: str
+    field_name: str
+    error_type: str
+    message: str
+    severity: str
+
+
+@dataclass
+class ImportRowResult:
+    row_number: int
+    entity_type: str
+    action: str
+    error_message: str | None = None
+
+
 # ============== REPOSITORY ==============
 
 
@@ -1488,9 +1518,39 @@ class GearRepository:
                     checkout_date=datetime.fromtimestamp(row[4]),
                     expected_return=datetime.fromtimestamp(row[5]) if row[5] else None,
                     actual_return=datetime.fromtimestamp(row[6]) if row[6] else None,
-                    notes=row[7] or "",
+                    notes=row[7],
                 ),
                 row[8],
+            )
+            for row in rows
+        ]
+
+    def get_all_checkout_history(self) -> list[Checkout]:
+        """Returns all checkout history with borrower names"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT c.*, b.name as borrower_name
+            FROM checkouts c
+            JOIN borrowers b ON c.borrower_id = b.id
+            ORDER BY c.checkout_date DESC
+        """
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [
+            Checkout(
+                id=row[0],
+                item_id=row[1],
+                item_type=GearCategory(row[2]),
+                borrower_name=row[8],
+                checkout_date=datetime.fromtimestamp(row[4]),
+                expected_return=datetime.fromtimestamp(row[5]) if row[5] else None,
+                actual_return=datetime.fromtimestamp(row[6]) if row[6] else None,
+                notes=row[7],
             )
             for row in rows
         ]
@@ -1523,6 +1583,27 @@ class GearRepository:
             "SELECT * FROM maintenance_logs WHERE item_id = ? ORDER BY date DESC",
             (item_id,),
         )
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [
+            MaintenanceLog(
+                id=row[0],
+                item_id=row[1],
+                item_type=GearCategory(row[2]),
+                log_type=MaintenanceType(row[3]),
+                date=datetime.fromtimestamp(row[4]),
+                details=row[5],
+                ammo_count=row[6],
+                photo_path=row[7],
+            )
+            for row in rows
+        ]
+
+    def get_all_maintenance_logs(self) -> list[MaintenanceLog]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM maintenance_logs ORDER BY date DESC")
         rows = cursor.fetchall()
         conn.close()
 
@@ -2381,3 +2462,1682 @@ class GearRepository:
                         else "TBD",
                     ]
                 )
+
+    def parse_sectioned_csv(self, input_path: Path) -> dict[str, list[dict[str, str]]]:
+        """
+        Parses CSV file with === SECTION === headers.
+        Returns dict mapping section names to list of row dicts.
+        """
+        import csv
+
+        result = {}
+        current_section = None
+        section_headers = []
+        row_number = 0
+
+        try:
+            with open(input_path, "r", newline="", encoding="utf-8-sig") as f:
+                reader = csv.reader(f)
+
+                for row_number, row in enumerate(reader, start=1):
+                    if not row:
+                        continue
+
+                    first_cell = row[0].strip()
+
+                    if first_cell.startswith("===") and first_cell.endswith("==="):
+                        current_section = first_cell.replace("=", "").strip().upper()
+                        result[current_section] = []
+                        section_headers = []
+                        continue
+
+                    if first_cell.startswith("#"):
+                        continue
+
+                    if current_section is None:
+                        continue
+
+                    if section_headers:
+                        row_dict = {}
+                        for i, header in enumerate(section_headers):
+                            value = row[i] if i < len(row) else ""
+                            row_dict[header.strip()] = value.strip()
+                        result[current_section].append(row_dict)
+                    else:
+                        section_headers = [cell.strip() for cell in row]
+
+        except Exception as e:
+            raise Exception(f"Error parsing CSV at row {row_number}: {str(e)}")
+
+        return result
+
+    def validate_firearm_row(self, row: dict, row_num: int) -> list[ValidationError]:
+        errors = []
+        required = ["name", "caliber", "purchase_date"]
+
+        for field in required:
+            if field not in row or not row[field]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "FIREARM",
+                        field,
+                        "required",
+                        f"'{field}' is required",
+                        "error",
+                    )
+                )
+
+        if "name" in row and len(row["name"]) > 200:
+            errors.append(
+                ValidationError(
+                    row_num,
+                    "FIREARM",
+                    "name",
+                    "invalid_length",
+                    "Name exceeds 200 characters",
+                    "warning",
+                )
+            )
+
+        if "purchase_date" in row and row["purchase_date"]:
+            try:
+                datetime.fromisoformat(row["purchase_date"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "FIREARM",
+                        "purchase_date",
+                        "invalid_format",
+                        "Date must be ISO format (YYYY-MM-DD)",
+                        "error",
+                    )
+                )
+
+        if "status" in row and row["status"]:
+            valid_statuses = [s.value for s in CheckoutStatus]
+            if row["status"] not in valid_statuses:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "FIREARM",
+                        "status",
+                        "invalid_enum",
+                        f"Status must be one of: {', '.join(valid_statuses)}",
+                        "error",
+                    )
+                )
+
+        if "is_nfa" in row and row["is_nfa"]:
+            if row["is_nfa"].upper() not in ["TRUE", "FALSE", "1", "0"]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "FIREARM",
+                        "is_nfa",
+                        "invalid_type",
+                        "is_nfa must be TRUE/FALSE or 1/0",
+                        "error",
+                    )
+                )
+
+        if "rounds_fired" in row and row["rounds_fired"]:
+            try:
+                int(row["rounds_fired"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "FIREARM",
+                        "rounds_fired",
+                        "invalid_type",
+                        "rounds_fired must be an integer",
+                        "error",
+                    )
+                )
+
+        if "clean_interval_rounds" in row and row["clean_interval_rounds"]:
+            try:
+                int(row["clean_interval_rounds"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "FIREARM",
+                        "clean_interval_rounds",
+                        "invalid_type",
+                        "clean_interval_rounds must be an integer",
+                        "error",
+                    )
+                )
+
+        if "oil_interval_days" in row and row["oil_interval_days"]:
+            try:
+                int(row["oil_interval_days"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "FIREARM",
+                        "oil_interval_days",
+                        "invalid_type",
+                        "oil_interval_days must be an integer",
+                        "error",
+                    )
+                )
+
+        if "transfer_status" in row and row["transfer_status"]:
+            valid_statuses = [s.value for s in TransferStatus]
+            if row["transfer_status"] not in valid_statuses:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "FIREARM",
+                        "transfer_status",
+                        "invalid_enum",
+                        f"transfer_status must be one of: {', '.join(valid_statuses)}",
+                        "error",
+                    )
+                )
+
+        return errors
+
+    def validate_nfa_item_row(self, row: dict, row_num: int) -> list[ValidationError]:
+        errors = []
+        required = [
+            "name",
+            "nfa_type",
+            "manufacturer",
+            "serial_number",
+            "tax_stamp_id",
+            "purchase_date",
+        ]
+
+        for field in required:
+            if field not in row or not row[field]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "NFA_ITEM",
+                        field,
+                        "required",
+                        f"'{field}' is required",
+                        "error",
+                    )
+                )
+
+        if "nfa_type" in row and row["nfa_type"]:
+            valid_types = [t.value for t in NFAItemType]
+            if row["nfa_type"] not in valid_types:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "NFA_ITEM",
+                        "nfa_type",
+                        "invalid_enum",
+                        f"nfa_type must be one of: {', '.join(valid_types)}",
+                        "error",
+                    )
+                )
+
+        if "status" in row and row["status"]:
+            valid_statuses = [s.value for s in CheckoutStatus]
+            if row["status"] not in valid_statuses:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "NFA_ITEM",
+                        "status",
+                        "invalid_enum",
+                        f"Status must be one of: {', '.join(valid_statuses)}",
+                        "error",
+                    )
+                )
+
+        if "purchase_date" in row and row["purchase_date"]:
+            try:
+                datetime.fromisoformat(row["purchase_date"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "NFA_ITEM",
+                        "purchase_date",
+                        "invalid_format",
+                        "Date must be ISO format (YYYY-MM-DD)",
+                        "error",
+                    )
+                )
+
+        return errors
+
+    def validate_soft_gear_row(self, row: dict, row_num: int) -> list[ValidationError]:
+        errors = []
+        required = ["name", "category", "brand", "purchase_date"]
+
+        for field in required:
+            if field not in row or not row[field]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "SOFT_GEAR",
+                        field,
+                        "required",
+                        f"'{field}' is required",
+                        "error",
+                    )
+                )
+
+        if "status" in row and row["status"]:
+            valid_statuses = [s.value for s in CheckoutStatus]
+            if row["status"] not in valid_statuses:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "SOFT_GEAR",
+                        "status",
+                        "invalid_enum",
+                        f"Status must be one of: {', '.join(valid_statuses)}",
+                        "error",
+                    )
+                )
+
+        if "purchase_date" in row and row["purchase_date"]:
+            try:
+                datetime.fromisoformat(row["purchase_date"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "SOFT_GEAR",
+                        "purchase_date",
+                        "invalid_format",
+                        "Date must be ISO format (YYYY-MM-DD)",
+                        "error",
+                    )
+                )
+
+        return errors
+
+    def validate_attachment_row(self, row: dict, row_num: int) -> list[ValidationError]:
+        errors = []
+        required = ["name", "category", "brand", "model"]
+
+        for field in required:
+            if field not in row or not row[field]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "ATTACHMENT",
+                        field,
+                        "required",
+                        f"'{field}' is required",
+                        "error",
+                    )
+                )
+
+        if "zero_distance_yards" in row and row["zero_distance_yards"]:
+            try:
+                int(row["zero_distance_yards"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "ATTACHMENT",
+                        "zero_distance_yards",
+                        "invalid_type",
+                        "zero_distance_yards must be an integer",
+                        "error",
+                    )
+                )
+
+        if "purchase_date" in row and row["purchase_date"]:
+            try:
+                datetime.fromisoformat(row["purchase_date"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "ATTACHMENT",
+                        "purchase_date",
+                        "invalid_format",
+                        "Date must be ISO format (YYYY-MM-DD)",
+                        "error",
+                    )
+                )
+
+        return errors
+
+    def validate_consumable_row(self, row: dict, row_num: int) -> list[ValidationError]:
+        errors = []
+        required = ["name", "category", "unit", "quantity"]
+
+        for field in required:
+            if field not in row or not row[field]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "CONSUMABLE",
+                        field,
+                        "required",
+                        f"'{field}' is required",
+                        "error",
+                    )
+                )
+
+        if "quantity" in row:
+            try:
+                qty = int(row["quantity"])
+                if qty < 0:
+                    errors.append(
+                        ValidationError(
+                            row_num,
+                            "CONSUMABLE",
+                            "quantity",
+                            "invalid_value",
+                            "quantity must be >= 0",
+                            "error",
+                        )
+                    )
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "CONSUMABLE",
+                        "quantity",
+                        "invalid_type",
+                        "quantity must be an integer",
+                        "error",
+                    )
+                )
+
+        if "min_quantity" in row:
+            try:
+                min_qty = int(row["min_quantity"])
+                if min_qty < 0:
+                    errors.append(
+                        ValidationError(
+                            row_num,
+                            "CONSUMABLE",
+                            "min_quantity",
+                            "invalid_value",
+                            "min_quantity must be >= 0",
+                            "error",
+                        )
+                    )
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "CONSUMABLE",
+                        "min_quantity",
+                        "invalid_type",
+                        "min_quantity must be an integer",
+                        "error",
+                    )
+                )
+
+        return errors
+
+    def validate_reload_batch_row(
+        self, row: dict, row_num: int
+    ) -> list[ValidationError]:
+        errors = []
+        required = ["cartridge", "date_created", "bullet_maker", "bullet_model"]
+
+        for field in required:
+            if field not in row or not row[field]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "RELOAD_BATCH",
+                        field,
+                        "required",
+                        f"'{field}' is required",
+                        "error",
+                    )
+                )
+
+        if "date_created" in row and row["date_created"]:
+            try:
+                datetime.fromisoformat(row["date_created"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "RELOAD_BATCH",
+                        "date_created",
+                        "invalid_format",
+                        "Date must be ISO format (YYYY-MM-DD)",
+                        "error",
+                    )
+                )
+
+        if "test_date" in row and row["test_date"]:
+            try:
+                datetime.fromisoformat(row["test_date"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "RELOAD_BATCH",
+                        "test_date",
+                        "invalid_format",
+                        "Date must be ISO format (YYYY-MM-DD)",
+                        "error",
+                    )
+                )
+
+        numeric_fields = [
+            "bullet_weight_gr",
+            "powder_charge_gr",
+            "coal_in",
+            "avg_velocity",
+            "es",
+            "sd",
+            "group_size_inches",
+        ]
+        for field in numeric_fields:
+            if field in row and row[field]:
+                try:
+                    float(row[field])
+                except ValueError:
+                    errors.append(
+                        ValidationError(
+                            row_num,
+                            "RELOAD_BATCH",
+                            field,
+                            "invalid_type",
+                            f"{field} must be a number",
+                            "error",
+                        )
+                    )
+
+        return errors
+
+    def validate_loadout_row(self, row: dict, row_num: int) -> list[ValidationError]:
+        errors = []
+        required = ["name"]
+
+        for field in required:
+            if field not in row or not row[field]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "LOADOUT",
+                        field,
+                        "required",
+                        f"'{field}' is required",
+                        "error",
+                    )
+                )
+
+        if "created_date" in row and row["created_date"]:
+            try:
+                datetime.fromisoformat(row["created_date"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "LOADOUT",
+                        "created_date",
+                        "invalid_format",
+                        "Date must be ISO format (YYYY-MM-DD)",
+                        "error",
+                    )
+                )
+
+        return errors
+
+    def validate_loadout_item_row(
+        self, row: dict, row_num: int
+    ) -> list[ValidationError]:
+        errors = []
+        required = ["loadout_id", "item_id", "item_type"]
+
+        for field in required:
+            if field not in row or not row[field]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "LOADOUT_ITEM",
+                        field,
+                        "required",
+                        f"'{field}' is required",
+                        "error",
+                    )
+                )
+
+        if "item_type" in row and row["item_type"]:
+            valid_types = [t.value for t in GearCategory]
+            if row["item_type"] not in valid_types:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "LOADOUT_ITEM",
+                        "item_type",
+                        "invalid_enum",
+                        f"item_type must be one of: {', '.join(valid_types)}",
+                        "error",
+                    )
+                )
+
+        return errors
+
+    def validate_loadout_consumable_row(
+        self, row: dict, row_num: int
+    ) -> list[ValidationError]:
+        errors = []
+        required = ["loadout_id", "consumable_id", "quantity"]
+
+        for field in required:
+            if field not in row or not row[field]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "LOADOUT_CONSUMABLE",
+                        field,
+                        "required",
+                        f"'{field}' is required",
+                        "error",
+                    )
+                )
+
+        if "quantity" in row:
+            try:
+                qty = int(row["quantity"])
+                if qty < 0:
+                    errors.append(
+                        ValidationError(
+                            row_num,
+                            "LOADOUT_CONSUMABLE",
+                            "quantity",
+                            "invalid_value",
+                            "quantity must be >= 0",
+                            "error",
+                        )
+                    )
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "LOADOUT_CONSUMABLE",
+                        "quantity",
+                        "invalid_type",
+                        "quantity must be an integer",
+                        "error",
+                    )
+                )
+
+        return errors
+
+    def validate_borrower_row(self, row: dict, row_num: int) -> list[ValidationError]:
+        errors = []
+        required = ["name"]
+
+        for field in required:
+            if field not in row or not row[field]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "BORROWER",
+                        field,
+                        "required",
+                        f"'{field}' is required",
+                        "error",
+                    )
+                )
+
+        return errors
+
+    def validate_checkout_row(self, row: dict, row_num: int) -> list[ValidationError]:
+        errors = []
+        required = ["item_id", "item_type", "borrower_name", "checkout_date"]
+
+        for field in required:
+            if field not in row or not row[field]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "CHECKOUT",
+                        field,
+                        "required",
+                        f"'{field}' is required",
+                        "error",
+                    )
+                )
+
+        if "item_type" in row and row["item_type"]:
+            valid_types = [t.value for t in GearCategory]
+            if row["item_type"] not in valid_types:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "CHECKOUT",
+                        "item_type",
+                        "invalid_enum",
+                        f"item_type must be one of: {', '.join(valid_types)}",
+                        "error",
+                    )
+                )
+
+        if "checkout_date" in row and row["checkout_date"]:
+            try:
+                datetime.fromisoformat(row["checkout_date"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "CHECKOUT",
+                        "checkout_date",
+                        "invalid_format",
+                        "Date must be ISO format (YYYY-MM-DD)",
+                        "error",
+                    )
+                )
+
+        if "expected_return" in row and row["expected_return"]:
+            try:
+                datetime.fromisoformat(row["expected_return"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "CHECKOUT",
+                        "expected_return",
+                        "invalid_format",
+                        "Date must be ISO format (YYYY-MM-DD)",
+                        "error",
+                    )
+                )
+
+        if "actual_return" in row and row["actual_return"]:
+            try:
+                datetime.fromisoformat(row["actual_return"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "CHECKOUT",
+                        "actual_return",
+                        "invalid_format",
+                        "Date must be ISO format (YYYY-MM-DD)",
+                        "error",
+                    )
+                )
+
+        return errors
+
+    def validate_maintenance_log_row(
+        self, row: dict, row_num: int
+    ) -> list[ValidationError]:
+        errors = []
+        required = ["item_id", "item_type", "log_type", "date"]
+
+        for field in required:
+            if field not in row or not row[field]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "MAINTENANCE_LOG",
+                        field,
+                        "required",
+                        f"'{field}' is required",
+                        "error",
+                    )
+                )
+
+        if "item_type" in row and row["item_type"]:
+            valid_types = [t.value for t in GearCategory]
+            if row["item_type"] not in valid_types:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "MAINTENANCE_LOG",
+                        "item_type",
+                        "invalid_enum",
+                        f"item_type must be one of: {', '.join(valid_types)}",
+                        "error",
+                    )
+                )
+
+        if "log_type" in row and row["log_type"]:
+            valid_types = [t.value for t in MaintenanceType]
+            if row["log_type"] not in valid_types:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "MAINTENANCE_LOG",
+                        "log_type",
+                        "invalid_enum",
+                        f"log_type must be one of: {', '.join(valid_types)}",
+                        "error",
+                    )
+                )
+
+        if "date" in row and row["date"]:
+            try:
+                datetime.fromisoformat(row["date"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "MAINTENANCE_LOG",
+                        "date",
+                        "invalid_format",
+                        "Date must be ISO format (YYYY-MM-DD)",
+                        "error",
+                    )
+                )
+
+        if "ammo_count" in row and row["ammo_count"]:
+            try:
+                int(row["ammo_count"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "MAINTENANCE_LOG",
+                        "ammo_count",
+                        "invalid_type",
+                        "ammo_count must be an integer",
+                        "error",
+                    )
+                )
+
+        return errors
+
+    def validate_transfer_row(self, row: dict, row_num: int) -> list[ValidationError]:
+        errors = []
+        required = [
+            "firearm_id",
+            "transfer_date",
+            "buyer_name",
+            "buyer_address",
+            "buyer_dl_number",
+        ]
+
+        for field in required:
+            if field not in row or not row[field]:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "TRANSFER",
+                        field,
+                        "required",
+                        f"'{field}' is required",
+                        "error",
+                    )
+                )
+
+        if "transfer_date" in row and row["transfer_date"]:
+            try:
+                datetime.fromisoformat(row["transfer_date"])
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "TRANSFER",
+                        "transfer_date",
+                        "invalid_format",
+                        "Date must be ISO format (YYYY-MM-DD)",
+                        "error",
+                    )
+                )
+
+        if "sale_price" in row and row["sale_price"]:
+            try:
+                price = float(row["sale_price"])
+                if price < 0:
+                    errors.append(
+                        ValidationError(
+                            row_num,
+                            "TRANSFER",
+                            "sale_price",
+                            "invalid_value",
+                            "sale_price must be >= 0",
+                            "error",
+                        )
+                    )
+            except ValueError:
+                errors.append(
+                    ValidationError(
+                        row_num,
+                        "TRANSFER",
+                        "sale_price",
+                        "invalid_type",
+                        "sale_price must be a number",
+                        "error",
+                    )
+                )
+
+        return errors
+
+    def validate_csv_data(self, parsed_data: dict) -> list[ValidationError]:
+        all_errors = []
+        validators = {
+            "FIREARMS": self.validate_firearm_row,
+            "NFA ITEMS": self.validate_nfa_item_row,
+            "SOFT GEAR": self.validate_soft_gear_row,
+            "ATTACHMENTS": self.validate_attachment_row,
+            "CONSUMABLES": self.validate_consumable_row,
+            "RELOAD BATCHES": self.validate_reload_batch_row,
+            "LOADOUTS": self.validate_loadout_row,
+            "LOADOUT ITEMS": self.validate_loadout_item_row,
+            "LOADOUT CONSUMABLES": self.validate_loadout_consumable_row,
+            "BORROWERS": self.validate_borrower_row,
+            "CHECKOUT HISTORY": self.validate_checkout_row,
+            "MAINTENANCE LOGS": self.validate_maintenance_log_row,
+            "TRANSFERS": self.validate_transfer_row,
+        }
+
+        for section_name, rows in parsed_data.items():
+            if section_name in validators:
+                validator = validators[section_name]
+                for i, row in enumerate(rows, start=1):
+                    errors = validator(row, i)
+                    all_errors.extend(errors)
+
+        return all_errors
+
+    def detect_duplicate_firearm(self, serial_number: str) -> Firearm | None:
+        if not serial_number:
+            return None
+        firearms = self.get_all_firearms()
+        for fw in firearms:
+            if fw.serial_number == serial_number:
+                return fw
+        return None
+
+    def detect_duplicate_nfa_item(self, name: str) -> NFAItem | None:
+        if not name:
+            return None
+        nfa_items = self.get_all_nfa_items()
+        for item in nfa_items:
+            if item.name == name:
+                return item
+        return None
+
+    def detect_duplicate_soft_gear(self, name: str) -> SoftGear | None:
+        if not name:
+            return None
+        gear_items = self.get_all_soft_gear()
+        for gear in gear_items:
+            if gear.name == name:
+                return gear
+        return None
+
+    def detect_duplicate_attachment(self, name: str) -> Attachment | None:
+        if not name:
+            return None
+        attachments = self.get_all_attachments()
+        for att in attachments:
+            if att.name == name:
+                return att
+        return None
+
+    def detect_duplicate_consumable(self, name: str) -> Consumable | None:
+        if not name:
+            return None
+        consumables = self.get_all_consumables()
+        for cons in consumables:
+            if cons.name == name:
+                return cons
+        return None
+
+    def detect_duplicate_reload_batch(
+        self, cartridge: str, bullet_model: str
+    ) -> ReloadBatch | None:
+        if not cartridge or not bullet_model:
+            return None
+        batches = self.get_all_reload_batches()
+        for batch in batches:
+            if batch.cartridge == cartridge and batch.bullet_model == bullet_model:
+                return batch
+        return None
+
+    def detect_duplicate_borrower(self, name: str, email: str) -> Borrower | None:
+        if not name:
+            return None
+        borrowers = self.get_all_borrowers()
+        for borrower in borrowers:
+            if borrower.name == name and borrower.email == email:
+                return borrower
+        return None
+
+    def detect_duplicate_loadout(self, name: str) -> Loadout | None:
+        if not name:
+            return None
+        loadouts = self.get_all_loadouts()
+        for loadout in loadouts:
+            if loadout.name == name:
+                return loadout
+
+    def export_complete_csv(self, output_path: Path) -> None:
+        import csv
+
+        with open(output_path, "w", newline="") as f:
+            writer = csv.writer(f)
+
+            writer.writerow(["=== METADATA ==="])
+            writer.writerow(
+                ["Export Date", "GearTracker Version", "Export Type", "Dry Run"]
+            )
+            writer.writerow(
+                [datetime.now().strftime("%Y-%m-%d"), "0.1.0-alpha.2", "FULL", "FALSE"]
+            )
+            writer.writerow([])
+
+            writer.writerow(["=== FIREARMS ==="])
+            writer.writerow(
+                [
+                    "id",
+                    "name",
+                    "caliber",
+                    "serial_number",
+                    "purchase_date",
+                    "notes",
+                    "status",
+                    "is_nfa",
+                    "nfa_type",
+                    "tax_stamp_id",
+                    "form_type",
+                    "barrel_length",
+                    "trust_name",
+                    "transfer_status",
+                    "rounds_fired",
+                    "clean_interval_rounds",
+                    "oil_interval_days",
+                    "needs_maintenance",
+                    "maintenance_conditions",
+                ]
+            )
+            for fw in self.get_all_firearms():
+                writer.writerow(
+                    [
+                        fw.id,
+                        fw.name,
+                        fw.caliber,
+                        fw.serial_number,
+                        fw.purchase_date.strftime("%Y-%m-%d"),
+                        fw.notes,
+                        fw.status.value,
+                        1 if fw.is_nfa else 0,
+                        fw.nfa_type.value if fw.nfa_type else "",
+                        fw.tax_stamp_id,
+                        fw.form_type,
+                        fw.barrel_length,
+                        fw.trust_name,
+                        fw.transfer_status.value,
+                        fw.rounds_fired,
+                        fw.clean_interval_rounds,
+                        fw.oil_interval_days,
+                        1 if fw.needs_maintenance else 0,
+                        fw.maintenance_conditions,
+                    ]
+                )
+            writer.writerow([])
+
+            writer.writerow(["=== NFA ITEMS ==="])
+            writer.writerow(
+                [
+                    "id",
+                    "name",
+                    "nfa_type",
+                    "manufacturer",
+                    "serial_number",
+                    "tax_stamp_id",
+                    "caliber_bore",
+                    "purchase_date",
+                    "form_type",
+                    "trust_name",
+                    "notes",
+                    "status",
+                ]
+            )
+            for nfa in self.get_all_nfa_items():
+                writer.writerow(
+                    [
+                        nfa.id,
+                        nfa.name,
+                        nfa.nfa_type.value,
+                        nfa.manufacturer,
+                        nfa.serial_number,
+                        nfa.tax_stamp_id,
+                        nfa.caliber_bore,
+                        nfa.purchase_date.strftime("%Y-%m-%d"),
+                        nfa.form_type,
+                        nfa.trust_name,
+                        nfa.notes,
+                        nfa.status.value,
+                    ]
+                )
+            writer.writerow([])
+
+            writer.writerow(["=== SOFT GEAR ==="])
+            writer.writerow(
+                ["id", "name", "category", "brand", "purchase_date", "notes", "status"]
+            )
+            for gear in self.get_all_soft_gear():
+                writer.writerow(
+                    [
+                        gear.id,
+                        gear.name,
+                        gear.category,
+                        gear.brand,
+                        gear.purchase_date.strftime("%Y-%m-%d"),
+                        gear.notes,
+                        gear.status.value,
+                    ]
+                )
+            writer.writerow([])
+
+            writer.writerow(["=== ATTACHMENTS ==="])
+            writer.writerow(
+                [
+                    "id",
+                    "name",
+                    "category",
+                    "brand",
+                    "model",
+                    "purchase_date",
+                    "serial_number",
+                    "mounted_on_firearm_id",
+                    "mount_position",
+                    "zero_distance_yards",
+                    "zero_notes",
+                    "notes",
+                ]
+            )
+            for att in self.get_all_attachments():
+                writer.writerow(
+                    [
+                        att.id,
+                        att.name,
+                        att.category,
+                        att.brand,
+                        att.model,
+                        att.purchase_date.strftime("%Y-%m-%d")
+                        if att.purchase_date
+                        else "",
+                        att.serial_number,
+                        att.mounted_on_firearm_id or "",
+                        att.mount_position,
+                        att.zero_distance_yards or "",
+                        att.zero_notes,
+                        att.notes,
+                    ]
+                )
+            writer.writerow([])
+
+            writer.writerow(["=== CONSUMABLES ==="])
+            writer.writerow(
+                ["id", "name", "category", "unit", "quantity", "min_quantity", "notes"]
+            )
+            for cons in self.get_all_consumables():
+                writer.writerow(
+                    [
+                        cons.id,
+                        cons.name,
+                        cons.category,
+                        cons.unit,
+                        cons.quantity,
+                        cons.min_quantity,
+                        cons.notes,
+                    ]
+                )
+            writer.writerow([])
+
+            writer.writerow(["=== RELOAD BATCHES ==="])
+            writer.writerow(
+                [
+                    "id",
+                    "cartridge",
+                    "firearm_id",
+                    "date_created",
+                    "bullet_maker",
+                    "bullet_model",
+                    "bullet_weight_gr",
+                    "powder_name",
+                    "powder_charge_gr",
+                    "powder_lot",
+                    "primer_maker",
+                    "primer_type",
+                    "case_brand",
+                    "case_times_fired",
+                    "case_prep_notes",
+                    "coal_in",
+                    "crimp_style",
+                    "test_date",
+                    "avg_velocity",
+                    "es",
+                    "sd",
+                    "group_size_inches",
+                    "group_distance_yards",
+                    "notes",
+                ]
+            )
+            for batch in self.get_all_reload_batches():
+                writer.writerow(
+                    [
+                        batch.id,
+                        batch.cartridge,
+                        batch.firearm_id or "",
+                        batch.date_created.strftime("%Y-%m-%d"),
+                        batch.bullet_maker,
+                        batch.bullet_model,
+                        batch.bullet_weight_gr or "",
+                        batch.powder_name,
+                        batch.powder_charge_gr or "",
+                        batch.powder_lot,
+                        batch.primer_maker,
+                        batch.primer_type,
+                        batch.case_brand,
+                        batch.case_times_fired or "",
+                        batch.case_prep_notes,
+                        batch.coal_in or "",
+                        batch.crimp_style,
+                        batch.test_date.strftime("%Y-%m-%d") if batch.test_date else "",
+                        batch.avg_velocity or "",
+                        batch.es or "",
+                        batch.sd or "",
+                        batch.group_size_inches or "",
+                        batch.group_distance_yards or "",
+                        batch.notes,
+                    ]
+                )
+            writer.writerow([])
+
+            writer.writerow(["=== LOADOUTS ==="])
+            writer.writerow(["id", "name", "description", "created_date", "notes"])
+            for loadout in self.get_all_loadouts():
+                writer.writerow(
+                    [
+                        loadout.id,
+                        loadout.name,
+                        loadout.description,
+                        loadout.created_date.strftime("%Y-%m-%d")
+                        if loadout.created_date
+                        else "",
+                        loadout.notes,
+                    ]
+                )
+            writer.writerow([])
+
+            writer.writerow(["=== LOADOUT ITEMS ==="])
+            writer.writerow(["id", "loadout_id", "item_id", "item_type", "notes"])
+            for li in self.get_all_loadouts():
+                for item in self.get_loadout_items(li.id):
+                    writer.writerow(
+                        [
+                            item.id,
+                            item.loadout_id,
+                            item.item_id,
+                            item.item_type.value,
+                            item.notes,
+                        ]
+                    )
+            writer.writerow([])
+
+            writer.writerow(["=== LOADOUT CONSUMABLES ==="])
+            writer.writerow(["id", "loadout_id", "consumable_id", "quantity", "notes"])
+            for loadout in self.get_all_loadouts():
+                for lc in self.get_loadout_consumables(loadout.id):
+                    writer.writerow(
+                        [lc.id, lc.loadout_id, lc.consumable_id, lc.quantity, lc.notes]
+                    )
+            writer.writerow([])
+
+            writer.writerow(["=== BORROWERS ==="])
+            writer.writerow(["id", "name", "phone", "email", "notes"])
+            for borrower in self.get_all_borrowers():
+                writer.writerow(
+                    [
+                        borrower.id,
+                        borrower.name,
+                        borrower.phone,
+                        borrower.email,
+                        borrower.notes,
+                    ]
+                )
+            writer.writerow([])
+
+            writer.writerow(["=== CHECKOUT HISTORY ==="])
+            writer.writerow(
+                [
+                    "id",
+                    "item_id",
+                    "item_type",
+                    "borrower_name",
+                    "checkout_date",
+                    "expected_return",
+                    "actual_return",
+                    "notes",
+                ]
+            )
+            for checkout in self.get_all_checkout_history():
+                writer.writerow(
+                    [
+                        checkout.id,
+                        checkout.item_id,
+                        checkout.item_type.value,
+                        checkout.borrower_name,
+                        checkout.checkout_date.strftime("%Y-%m-%d"),
+                        checkout.expected_return.strftime("%Y-%m-%d")
+                        if checkout.expected_return
+                        else "",
+                        checkout.actual_return.strftime("%Y-%m-%d")
+                        if checkout.actual_return
+                        else "",
+                        checkout.notes,
+                    ]
+                )
+            writer.writerow([])
+
+            writer.writerow(["=== MAINTENANCE LOGS ==="])
+            writer.writerow(
+                [
+                    "id",
+                    "item_id",
+                    "item_type",
+                    "log_type",
+                    "date",
+                    "details",
+                    "ammo_count",
+                    "photo_path",
+                ]
+            )
+            for log in self.get_all_maintenance_logs():
+                writer.writerow(
+                    [
+                        log.id,
+                        log.item_id,
+                        log.item_type.value,
+                        log.log_type.value,
+                        log.date.strftime("%Y-%m-%d"),
+                        log.details,
+                        log.ammo_count or "",
+                        log.photo_path or "",
+                    ]
+                )
+            writer.writerow([])
+
+            writer.writerow(["=== TRANSFERS ==="])
+            writer.writerow(
+                [
+                    "id",
+                    "firearm_id",
+                    "transfer_date",
+                    "buyer_name",
+                    "buyer_address",
+                    "buyer_dl_number",
+                    "buyer_ltc_number",
+                    "sale_price",
+                    "ffl_dealer",
+                    "ffl_license",
+                    "notes",
+                ]
+            )
+            for transfer, _ in self.get_all_transfers():
+                writer.writerow(
+                    [
+                        transfer.id,
+                        transfer.firearm_id,
+                        transfer.transfer_date.strftime("%Y-%m-%d"),
+                        transfer.buyer_name,
+                        transfer.buyer_address,
+                        transfer.buyer_dl_number,
+                        transfer.buyer_ltc_number,
+                        transfer.sale_price,
+                        transfer.ffl_dealer,
+                        transfer.ffl_license,
+                        transfer.notes,
+                    ]
+                )
+
+    def get_entity_import_order(self) -> list[str]:
+        """
+        Returns entity types in dependency order for import.
+        Entities with no dependencies first, then dependent entities.
+        """
+        return [
+            "BORROWERS",  # No dependencies
+            "FIREARMS",  # No dependencies
+            "NFA ITEMS",  # No dependencies
+            "SOFT GEAR",  # No dependencies
+            "ATTACHMENTS",  # Depends on: firearms (optional)
+            "CONSUMABLES",  # No dependencies
+            "RELOAD BATCHES",  # Depends on: firearms (optional)
+            "LOADOUTS",  # No dependencies
+            "LOADOUT ITEMS",  # Depends on: loadouts + firearms/nfa/soft_gear
+            "LOADOUT CONSUMABLES",  # Depends on: loadouts + consumables
+            "CHECKOUT HISTORY",  # Depends on: items + borrowers
+            "MAINTENANCE LOGS",  # Depends on: items (firearms/nfa/soft_gear)
+            "TRANSFERS",  # Depends on: firearms
+        ]
+
+    def generate_csv_template(self, output_path: Path, entity_type: str | None = None) -> None:
+        """
+        Generates CSV template with validation comments.
+        If entity_type is None, generates complete template.
+        Otherwise, generates single entity template.
+        """
+        import csv
+
+        with open(output_path, "w", newline="") as f:
+            writer = csv.writer(f)
+
+            if entity_type is None:
+                self._write_full_template(writer)
+            else:
+                self._write_single_template(writer, entity_type)
+
+    def _write_full_template(self, writer) -> None:
+        """Writes complete CSV template with all sections."""
+        writer.writerow(["=== METADATA ==="])
+        writer.writerow(["Export Date,GearTracker Version,Export Type,Dry Run"])
+        writer.writerow(["# Enter export date in YYYY-MM-DD format"])
+        writer.writerow(["# Version: e.g., 0.1.0-alpha.2"])
+        writer.writerow(["# Export Type: FULL or BACKUP"])
+        writer.writerow(["2026-01-21,0.1.0-alpha.2,FULL,FALSE"])
+        writer.writerow([])
+
+        writer.writerow(["=== FIREARMS ==="])
+        writer.writerow([
+            "# Required: name, caliber, purchase_date",
+            "# Optional: serial_number (leave blank if none)",
+            "# Status values: AVAILABLE, CHECKED_OUT, LOST, RETIRED",
+            "# is_nfa: TRUE or FALSE",
+            "# nfa_type (if is_nfa=TRUE): SBR, SBS",
+            "# transfer_status: OWNED or TRANSFERRED",
+            "# Dates format: YYYY-MM-DD",
+            "id,name,caliber,serial_number,purchase_date,notes",
+            "status,is_nfa,nfa_type,tax_stamp_id,form_type",
+            "barrel_length,trust_name,transfer_status,rounds_fired",
+            "clean_interval_rounds,oil_interval_days,needs_maintenance,maintenance_conditions"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,S&W 1854,.45-70 Govt,ABC123,2025-01-15,My favorite lever gun",
+            "AVAILABLE,FALSE,,,,,OWNED,0,500,90,FALSE,"
+        ])
+        writer.writerow([])
+
+        writer.writerow(["=== NFA ITEMS ==="])
+        writer.writerow([
+            "# Required: name, nfa_type, manufacturer, serial_number, tax_stamp_id, purchase_date",
+            "# NFA type values: SUPPRESSOR, SBR, SBS, AOW, DD",
+            "# Status values: AVAILABLE, CHECKED_OUT, LOST, RETIRED",
+            "# Dates format: YYYY-MM-DD",
+            "id,name,nfa_type,manufacturer,serial_number,tax_stamp_id",
+            "caliber_bore,purchase_date,form_type,trust_name,notes,status"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,Suppressor X,SUPPRESSOR,Manufacturer,1234,STAMP123,.30,2025-01-15,Form 1,My Trust,,AVAILABLE"
+        ])
+        writer.writerow([])
+
+        writer.writerow(["=== SOFT GEAR ==="])
+        writer.writerow([
+            "# Required: name, category, brand, purchase_date",
+            "# Status values: AVAILABLE, CHECKED_OUT, LOST, RETIRED",
+            "# Dates format: YYYY-MM-DD",
+            "id,name,category,brand,purchase_date,notes,status"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,Tactical Vest,Armor,Brand X,2025-01-15,,AVAILABLE"
+        ])
+        writer.writerow([])
+
+        writer.writerow(["=== ATTACHMENTS ==="])
+        writer.writerow([
+            "# Required: name, category, brand, model",
+            "# Optional: mounted_on_firearm_id (leave blank if unmounted)",
+            "# zero_distance_yards: integer in yards",
+            "# Dates format: YYYY-MM-DD",
+            "id,name,category,brand,model,purchase_date,serial_number",
+            "mounted_on_firearm_id,mount_position,zero_distance_yards,zero_notes,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,Red Dot Sight,optic,Brand,Model X,2025-01-15,,,,100,Zeroed at 100 yards,"
+        ])
+        writer.writerow([])
+
+        writer.writerow(["=== CONSUMABLES ==="])
+        writer.writerow([
+            "# Required: name, category, unit, quantity",
+            "# quantity and min_quantity: integers >= 0",
+            "id,name,category,unit,quantity,min_quantity,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,.308 Ammo,Ammunition,rounds,500,50,"
+        ])
+        writer.writerow([])
+
+        writer.writerow(["=== RELOAD BATCHES ==="])
+        writer.writerow([
+            "# Required: cartridge, date_created, bullet_maker, bullet_model",
+            "# Optional: firearm_id (leave blank if none)",
+            "# bullet_weight_gr, powder_charge_gr, coal_in: numbers",
+            "# Dates format: YYYY-MM-DD",
+            "id,cartridge,firearm_id,date_created,bullet_maker,bullet_model",
+            "bullet_weight_gr,powder_name,powder_charge_gr,powder_lot",
+            "primer_maker,primer_type,case_brand,case_times_fired,case_prep_notes",
+            "coal_in,crimp_style,test_date,avg_velocity,es,sd",
+            "group_size_inches,group_distance_yards,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,.308,,2025-01-15,Hornady,ELD-X,178,",
+            "Varget,46.0,,,,2.800,crimp,,2025-01-20,2750,35,12,1.5,100,"
+        ])
+        writer.writerow([])
+
+        writer.writerow(["=== LOADOUTS ==="])
+        writer.writerow([
+            "# Required: name",
+            "# Optional: description, created_date, notes",
+            "# Dates format: YYYY-MM-DD",
+            "id,name,description,created_date,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,Hunting Loadout,Full kit for hunting,,"
+        ])
+        writer.writerow([])
+
+        writer.writerow(["=== LOADOUT ITEMS ==="])
+        writer.writerow([
+            "# Required: loadout_id, item_id, item_type",
+            "# item_type values: FIREARM, SOFT_GEAR, NFA_ITEM, CONSUMABLE",
+            "id,loadout_id,item_id,item_type,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,[LOADOUT_ID],[ITEM_ID],FIREARM,"
+        ])
+        writer.writerow([])
+
+        writer.writerow(["=== LOADOUT CONSUMABLES ==="])
+        writer.writerow([
+            "# Required: loadout_id, consumable_id, quantity",
+            "# quantity: integer >= 0",
+            "id,loadout_id,consumable_id,quantity,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,[LOADOUT_ID],[CONSUMABLE_ID],20,"
+        ])
+        writer.writerow([])
+
+        writer.writerow(["=== BORROWERS ==="])
+        writer.writerow([
+            "# Required: name",
+            "# Optional: phone, email, notes",
+            "id,name,phone,email,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,John Doe,555-123-4567,john@example.com,"
+        ])
+        writer.writerow([])
+
+        writer.writerow(["=== CHECKOUT HISTORY ==="])
+        writer.writerow([
+            "# Required: item_id, item_type, borrower_name, checkout_date",
+            "# item_type values: FIREARM, SOFT_GEAR, NFA_ITEM, CONSUMABLE",
+            "# Dates format: YYYY-MM-DD",
+            "id,item_id,item_type,borrower_name,checkout_date",
+            "expected_return,actual_return,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,[ITEM_ID],FIREARM,John Doe,2025-01-15,2025-01-20,,"
+        ])
+        writer.writerow([])
+
+        writer.writerow(["=== MAINTENANCE LOGS ==="])
+        writer.writerow([
+            "# Required: item_id, item_type, log_type, date",
+            "# item_type values: FIREARM, SOFT_GEAR, NFA_ITEM, CONSUMABLE",
+            "# log_type values: CLEANING, LUBRICATION, REPAIR, ZEROING, HUNTING, INSPECTION,",
+            "#                FIRED_ROUNDS, OILING, RAIN_EXPOSURE, CORROSIVE_AMMO, LEAD_AMMO",
+            "# ammo_count: integer (optional)",
+            "# Dates format: YYYY-MM-DD",
+            "id,item_id,item_type,log_type,date,details,ammo_count,photo_path"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,[ITEM_ID],FIREARM,CLEANING,2025-01-15,Cleaned after hunting,0,"
+        ])
+        writer.writerow([])
+
+        writer.writerow(["=== TRANSFERS ==="])
+        writer.writerow([
+            "# Required: firearm_id, transfer_date, buyer_name, buyer_address, buyer_dl_number",
+            "# sale_price: number >= 0",
+            "# Dates format: YYYY-MM-DD",
+            "id,firearm_id,transfer_date,buyer_name,buyer_address",
+            "buyer_dl_number,buyer_ltc_number,sale_price,ffl_dealer,ffl_license,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,[FIREARM_ID],2025-01-15,Jane Smith,123 Main St,DL123,,500.00,,,,"
+        ])
+
+    def _write_single_template(self, writer, entity_type: str) -> None:
+        """Writes single entity template."""
+        templates = {
+            'firearms': self._firearm_template,
+            'nfa_items': self._nfa_item_template,
+            'soft_gear': self._soft_gear_template,
+            'attachments': self._attachment_template,
+            'consumables': self._consumable_template,
+            'reload_batches': self._reload_batch_template,
+            'loadouts': self._loadout_template,
+            'borrowers': self._borrower_template,
+        }
+
+        if entity_type.lower() in templates:
+            templates[entity_type.lower()](writer)
+
+    def _firearm_template(self, writer) -> None:
+        writer.writerow(["=== FIREARMS ==="])
+        writer.writerow([
+            "# Required: name, caliber, purchase_date",
+            "# Status values: AVAILABLE, CHECKED_OUT, LOST, RETIRED",
+            "# is_nfa: TRUE or FALSE",
+            "# transfer_status: OWNED or TRANSFERRED",
+            "# Dates format: YYYY-MM-DD",
+            "id,name,caliber,serial_number,purchase_date,notes",
+            "status,is_nfa,nfa_type,tax_stamp_id,form_type",
+            "barrel_length,trust_name,transfer_status,rounds_fired",
+            "clean_interval_rounds,oil_interval_days,needs_maintenance,maintenance_conditions"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,S&W 1854,.45-70 Govt,ABC123,2025-01-15,,AVAILABLE,FALSE,,,,,OWNED,0,500,90,FALSE,"
+        ])
+
+    def _nfa_item_template(self, writer) -> None:
+        writer.writerow(["=== NFA ITEMS ==="])
+        writer.writerow([
+            "# Required: name, nfa_type, manufacturer, serial_number, tax_stamp_id, purchase_date",
+            "# NFA type values: SUPPRESSOR, SBR, SBS, AOW, DD",
+            "# Status values: AVAILABLE, CHECKED_OUT, LOST, RETIRED",
+            "# Dates format: YYYY-MM-DD",
+            "id,name,nfa_type,manufacturer,serial_number,tax_stamp_id",
+            "caliber_bore,purchase_date,form_type,trust_name,notes,status"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,Suppressor X,SUPPRESSOR,Manufacturer,1234,STAMP123,.30,2025-01-15,Form 1,My Trust,,AVAILABLE"
+        ])
+
+    def _soft_gear_template(self, writer) -> None:
+        writer.writerow(["=== SOFT GEAR ==="])
+        writer.writerow([
+            "# Required: name, category, brand, purchase_date",
+            "# Status values: AVAILABLE, CHECKED_OUT, LOST, RETIRED",
+            "# Dates format: YYYY-MM-DD",
+            "id,name,category,brand,purchase_date,notes,status"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,Tactical Vest,Armor,Brand X,2025-01-15,,AVAILABLE"
+        ])
+
+    def _attachment_template(self, writer) -> None:
+        writer.writerow(["=== ATTACHMENTS ==="])
+        writer.writerow([
+            "# Required: name, category, brand, model",
+            "# Optional: mounted_on_firearm_id (leave blank if unmounted)",
+            "# zero_distance_yards: integer in yards",
+            "# Dates format: YYYY-MM-DD",
+            "id,name,category,brand,model,purchase_date,serial_number",
+            "mounted_on_firearm_id,mount_position,zero_distance_yards,zero_notes,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,Red Dot Sight,optic,Brand,Model X,2025-01-15,,,,100,Zeroed at 100 yards,"
+        ])
+
+    def _consumable_template(self, writer) -> None:
+        writer.writerow(["=== CONSUMABLES ==="])
+        writer.writerow([
+            "# Required: name, category, unit, quantity",
+            "# quantity and min_quantity: integers >= 0",
+            "id,name,category,unit,quantity,min_quantity,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,.308 Ammo,Ammunition,rounds,500,50,"
+        ])
+
+    def _reload_batch_template(self, writer) -> None:
+        writer.writerow(["=== RELOAD BATCHES ==="])
+        writer.writerow([
+            "# Required: cartridge, date_created, bullet_maker, bullet_model",
+            "# Optional: firearm_id (leave blank if none)",
+            "# bullet_weight_gr, powder_charge_gr, coal_in: numbers",
+            "# Dates format: YYYY-MM-DD",
+            "id,cartridge,firearm_id,date_created,bullet_maker,bullet_model",
+            "bullet_weight_gr,powder_name,powder_charge_gr,powder_lot",
+            "primer_maker,primer_type,case_brand,case_times_fired,case_prep_notes",
+            "coal_in,crimp_style,test_date,avg_velocity,es,sd",
+            "group_size_inches,group_distance_yards,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,.308,,2025-01-15,Hornady,ELD-X,178,",
+            "Varget,46.0,,,,2.800,crimp,,2025-01-20,2750,35,12,1.5,100,"
+        ])
+
+    def _loadout_template(self, writer) -> None:
+        writer.writerow(["=== LOADOUTS ==="])
+        writer.writerow([
+            "# Required: name",
+            "# Optional: description, created_date, notes",
+            "# Dates format: YYYY-MM-DD",
+            "id,name,description,created_date,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,Hunting Loadout,Full kit for hunting,,"
+        ])
+
+    def _borrower_template(self, writer) -> None:
+        writer.writerow(["=== BORROWERS ==="])
+        writer.writerow([
+            "# Required: name",
+            "# Optional: phone, email, notes",
+            "id,name,phone,email,notes"
+        ])
+        writer.writerow([
+            "#550e8400-e29b-41d4-a716-4466554400000,John Doe,555-123-4567,john@example.com,"
+        ])
