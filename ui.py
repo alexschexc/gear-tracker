@@ -54,6 +54,12 @@ from gear_tracker import (
     LoadoutCheckout,
 )
 
+from csv_import_export import (
+    create_import_export_tab,
+    DuplicateResolutionDialog,
+    ImportProgressDialog,
+)
+
 
 class GearTrackerApp(QMainWindow):
     def __init__(self):
@@ -2677,6 +2683,13 @@ class GearTrackerApp(QMainWindow):
             )
             self.transfers_table.setItem(i, 6, QTableWidgetItem(price_text))
 
+    def create_import_export_tab(self):
+        """Create Import/Export tab using CSV import/export module."""
+        widget = create_import_export_tab(
+            repo=self.repo, message_box_class=QMessageBox, qfiledialog_class=QFileDialog
+        )
+        return widget
+
     def view_transfer_details(self):
         row = self.transfers_table.currentRow()
         if row < 0:
@@ -3345,22 +3358,18 @@ def main():
     sys.exit(app.exec())
 
 
-
-
-
-
 class DuplicateResolutionDialog(QDialog):
     def __init__(self, parent, entity_type: str, existing, imported):
         super().__init__(parent)
         self.setWindowTitle("Duplicate Detected")
         self.setMinimumWidth(600)
-        
+
         layout = QVBoxLayout()
-        
+
         warning = QLabel(f"A duplicate {entity_type} was detected:")
         warning.setStyleSheet("font-weight: bold; color: #B22222;")
         layout.addWidget(warning)
-        
+
         existing_group = QGroupBox("Existing in database:")
         existing_layout = QVBoxLayout()
         existing_text = self._format_item(existing)
@@ -3369,7 +3378,7 @@ class DuplicateResolutionDialog(QDialog):
         existing_layout.addWidget(existing_label)
         existing_group.setLayout(existing_layout)
         layout.addWidget(existing_group)
-        
+
         imported_group = QGroupBox("Imported from CSV:")
         imported_layout = QVBoxLayout()
         imported_text = self._format_item(imported)
@@ -3378,50 +3387,50 @@ class DuplicateResolutionDialog(QDialog):
         imported_layout.addWidget(imported_label)
         imported_group.setLayout(imported_layout)
         layout.addWidget(imported_group)
-        
+
         layout.addWidget(QLabel("\nWhat would you like to do?"))
-        
+
         btn_layout = QHBoxLayout()
-        
+
         self.skip_btn = QPushButton("Skip (keep existing)")
-        self.skip_btn.clicked.connect(lambda: self.done('skip'))
+        self.skip_btn.clicked.connect(lambda: self.done("skip"))
         btn_layout.addWidget(self.skip_btn)
-        
+
         self.overwrite_btn = QPushButton("Overwrite (replace existing)")
-        self.overwrite_btn.clicked.connect(lambda: self.done('overwrite'))
+        self.overwrite_btn.clicked.connect(lambda: self.done("overwrite"))
         btn_layout.addWidget(self.overwrite_btn)
-        
+
         self.rename_btn = QPushButton("Import as new (rename)")
-        self.rename_btn.clicked.connect(lambda: self.done('rename'))
+        self.rename_btn.clicked.connect(lambda: self.done("rename"))
         btn_layout.addWidget(self.rename_btn)
-        
+
         self.cancel_btn = QPushButton("Cancel Import")
-        self.cancel_btn.clicked.connect(lambda: self.done('cancel'))
+        self.cancel_btn.clicked.connect(lambda: self.done("cancel"))
         self.cancel_btn.setStyleSheet("background-color: #6B2020;")
         btn_layout.addWidget(self.cancel_btn)
-        
+
         layout.addLayout(btn_layout)
         self.setLayout(layout)
         self.action = None
-    
+
     def _format_item(self, item) -> str:
-        if hasattr(item, 'name'):
+        if hasattr(item, "name"):
             lines = [f"Name: {item.name}"]
-        if hasattr(item, 'serial_number'):
+        if hasattr(item, "serial_number"):
             lines.append(f"Serial: {item.serial_number}")
-        if hasattr(item, 'caliber'):
+        if hasattr(item, "caliber"):
             lines.append(f"Caliber: {item.caliber}")
-        if hasattr(item, 'category'):
+        if hasattr(item, "category"):
             lines.append(f"Category: {item.category}")
-        if hasattr(item, 'brand'):
+        if hasattr(item, "brand"):
             lines.append(f"Brand: {item.brand}")
-        if hasattr(item, 'email'):
+        if hasattr(item, "email"):
             lines.append(f"Email: {item.email}")
-        if hasattr(item, 'phone'):
+        if hasattr(item, "phone"):
             lines.append(f"Phone: {item.phone}")
-        
+
         return "\n".join(lines)
-    
+
     def get_action(self) -> str:
         return self.action
 
@@ -3431,97 +3440,109 @@ class ImportProgressDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Importing Data")
         self.setMinimumWidth(500)
-        
+
         layout = QVBoxLayout()
-        
+
         self.status_label = QLabel("Starting import...")
         layout.addWidget(self.status_label)
-        
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setMaximum(total_rows)
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
-        
+
         self.errors_text = QTextEdit()
         self.errors_text.setReadOnly(True)
         self.errors_text.setMaximumHeight(150)
         self.errors_text.setPlaceholderText("Any errors will appear here...")
         layout.addWidget(self.errors_text)
-        
+
         btn_layout = QHBoxLayout()
-        
+
         self.continue_btn = QPushButton("Continue")
         self.continue_btn.setEnabled(False)
         self.continue_btn.clicked.connect(self.accept)
         btn_layout.addWidget(self.continue_btn)
-        
+
         self.cancel_btn = QPushButton("Cancel Import")
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
-        
+
         layout.addLayout(btn_layout)
         self.setLayout(layout)
-    
+
     def update_progress(self, current: int, message: str):
         self.progress_bar.setValue(current)
         self.status_label.setText(message)
         QApplication.processEvents()
-    
+
     def add_error(self, error_text: str):
         if error_text:
             self.errors_text.append(error_text)
-    
+
     def finish(self):
         self.continue_btn.setEnabled(True)
         self.status_label.setText("Import complete!")
 
     def export_all_data(self):
         from pathlib import Path
-        
-        default_name = f"geartracker_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export All Data", str(Path.home() / "Documents" / default_name), "CSV Files (*.csv)"
+
+        default_name = (
+            f"geartracker_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         )
-        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export All Data",
+            str(Path.home() / "Documents" / default_name),
+            "CSV Files (*.csv)",
+        )
+
         if file_path:
             try:
                 self.repo.export_complete_csv(Path(file_path))
-                QMessageBox.information(self, "Export Complete", f"Data exported to:\n{file_path}")
+                QMessageBox.information(
+                    self, "Export Complete", f"Data exported to:\n{file_path}"
+                )
             except Exception as e:
-                QMessageBox.critical(self, "Export Error", f"Failed to export:\n{str(e)}")
+                QMessageBox.critical(
+                    self, "Export Error", f"Failed to export:\n{str(e)}"
+                )
 
     def preview_csv_import(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select CSV File", str(Path.home() / "Documents"), "CSV Files (*.csv)"
         )
-        
+
         if file_path:
             try:
                 result = self.repo.preview_import(Path(file_path))
                 self.show_import_results("Preview Results", result)
             except Exception as e:
-                QMessageBox.critical(self, "Preview Error", f"Failed to preview:\n{str(e)}")
+                QMessageBox.critical(
+                    self, "Preview Error", f"Failed to preview:\n{str(e)}"
+                )
 
     def import_csv_data(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select CSV File", str(Path.home() / "Documents"), "CSV Files (*.csv)"
         )
-        
+
         if not file_path:
             return
-        
+
         # First, preview to show what will be imported
         try:
             preview_result = self.repo.preview_import(Path(file_path))
-            
+
             if preview_result.errors:
                 QMessageBox.warning(
-                    self, "Import Validation Failed",
-                    f"CSV has {len(preview_result.errors)} errors.\n\nImport may fail or have unexpected results."
+                    self,
+                    "Import Validation Failed",
+                    f"CSV has {len(preview_result.errors)} errors.\n\nImport may fail or have unexpected results.",
                 )
                 self.show_import_results("Preview Results", preview_result)
                 return
-            
+
             # Confirm with user
             msg = f"Import will process {preview_result.total_rows} rows.\n"
             if preview_result.total_rows > 0:
@@ -3529,126 +3550,149 @@ class ImportProgressDialog(QDialog):
                 msg += f"  • Import: {preview_result.imported} rows\n"
                 msg += f"  • Skip: {preview_result.skipped} rows\n"
             msg += "\n\nContinue?"
-            
+
             reply = QMessageBox.question(
-                self, "Confirm Import", msg,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                self,
+                "Confirm Import",
+                msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
-            
+
             if reply == QMessageBox.StandardButton.No:
                 return
-            
+
             # Create progress dialog
             progress_dialog = ImportProgressDialog(self, preview_result.total_rows)
-            
+
             # Define progress callback
             def progress_callback(current, total, entity_type, message):
                 progress_dialog.update_progress(current, f"Importing {entity_type}...")
                 if message:
                     progress_dialog.add_error(message)
-            
+
             # Define duplicate handler
             def duplicate_handler(entity_type, existing, imported):
-                dialog = DuplicateResolutionDialog(self, entity_type, existing, imported)
+                dialog = DuplicateResolutionDialog(
+                    self, entity_type, existing, imported
+                )
                 if dialog.exec() == QDialog.DialogCode.Accepted:
                     return dialog.get_action()
                 else:
-                    return 'cancel'
-            
+                    return "cancel"
+
             # Actual import
             result = self.repo.import_complete_csv(
-                Path(file_path), dry_run=False,
+                Path(file_path),
+                dry_run=False,
                 duplicate_callback=duplicate_handler,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
             )
-            
+
             progress_dialog.finish()
-            
+
             # Show results
             self.show_import_results("Import Results", result)
-            
+
             # Refresh UI if any rows were imported
             if result.imported > 0 or result.overwritten > 0:
                 self.refresh_all()
-            
+
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import:\n{str(e)}")
 
     def generate_full_template(self):
         from pathlib import Path
-        
+
         default_name = f"geartracker_template_{datetime.now().strftime('%Y%m%d')}.csv"
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Template", str(Path.home() / "Documents" / default_name), "CSV Files (*.csv)"
+            self,
+            "Save Template",
+            str(Path.home() / "Documents" / default_name),
+            "CSV Files (*.csv)",
         )
-        
+
         if file_path:
             try:
                 self.repo.generate_csv_template(Path(file_path), entity_type=None)
-                QMessageBox.information(self, "Template Created", f"Template saved to:\n{file_path}")
+                QMessageBox.information(
+                    self, "Template Created", f"Template saved to:\n{file_path}"
+                )
             except Exception as e:
-                QMessageBox.critical(self, "Template Error", f"Failed to generate template:\n{str(e)}")
+                QMessageBox.critical(
+                    self, "Template Error", f"Failed to generate template:\n{str(e)}"
+                )
 
     def generate_single_template(self, entity_type: str):
         from pathlib import Path
-        
+
         entity_map = {
-            'Firearms': 'firearms',
-            'NFA Items': 'nfa_items',
-            'Soft Gear': 'soft_gear',
-            'Attachments': 'attachments',
-            'Consumables': 'consumables',
-            'Reload Batches': 'reload_batches',
-            'Loadouts': 'loadouts',
-            'Borrowers': 'borrowers'
+            "Firearms": "firearms",
+            "NFA Items": "nfa_items",
+            "Soft Gear": "soft_gear",
+            "Attachments": "attachments",
+            "Consumables": "consumables",
+            "Reload Batches": "reload_batches",
+            "Loadouts": "loadouts",
+            "Borrowers": "borrowers",
         }
-        
+
         csv_entity = entity_map.get(entity_type)
         if not csv_entity:
-            QMessageBox.warning(self, "Template Error", f"Unknown entity type: {entity_type}")
+            QMessageBox.warning(
+                self, "Template Error", f"Unknown entity type: {entity_type}"
+            )
             return
-        
-        default_name = f"geartracker_template_{csv_entity}_{datetime.now().strftime('%Y%m%d')}.csv"
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Template", str(Path.home() / "Documents" / default_name), "CSV Files (*.csv)"
+
+        default_name = (
+            f"geartracker_template_{csv_entity}_{datetime.now().strftime('%Y%m%d')}.csv"
         )
-        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Template",
+            str(Path.home() / "Documents" / default_name),
+            "CSV Files (*.csv)",
+        )
+
         if file_path:
             try:
                 self.repo.generate_csv_template(Path(file_path), entity_type=csv_entity)
-                QMessageBox.information(self, "Template Created", f"Template saved to:\n{file_path}")
+                QMessageBox.information(
+                    self, "Template Created", f"Template saved to:\n{file_path}"
+                )
             except Exception as e:
-                QMessageBox.critical(self, "Template Error", f"Failed to generate template:\n{str(e)}")
+                QMessageBox.critical(
+                    self, "Template Error", f"Failed to generate template:\n{str(e)}"
+                )
 
     def show_import_results(self, title: str, result):
         self.import_results_group.setTitle(title)
         self.import_results_group.setVisible(True)
-        
+
         summary = f"Total rows: {result.total_rows}\n"
         summary += f"Imported: {result.imported}\n"
         summary += f"Skipped: {result.skipped}\n"
         summary += f"Overwritten: {result.overwritten}\n"
         summary += f"Errors: {len(result.errors)}\n"
         summary += f"Warnings: {len(result.warnings)}"
-        
+
         self.import_results_label.setText(summary)
-        
+
         details = ""
         if result.entity_stats:
             details += "\n=== Entity Statistics ===\n"
             for entity, count in result.entity_stats.items():
                 details += f"{entity}: {count}\n"
-        
+
         if result.errors:
             details += "\n=== Errors ===\n"
             for error in result.errors:
                 details += f"• {error}\n"
-        
+
         if result.warnings:
             details += "\n=== Warnings ===\n"
             for warning in result.warnings:
                 details += f"• {warning}\n"
-        
+
         self.import_details_text.setText(details)
 
 
