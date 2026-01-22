@@ -162,6 +162,7 @@ cp ~/.gear_tracker/tracker.db ~/.gear_tracker/tracker.db.backup
 ## Installation & Running
 
 **Requirements:**
+
 - Python 3.14+
 - PyQt6
 
@@ -186,6 +187,7 @@ Coming soon - PyInstaller spec file included for building standalone executables
 ### v0.1.0-alpha (MVP) - Current Release ✅
 
 **Completed Features:**
+
 - ✅ Full inventory management (firearms, soft gear, NFA items, attachments, consumables)
 - ✅ Reload/handload tracking with batch management
 - ✅ Round count tracking per firearm with maintenance thresholds
@@ -199,6 +201,7 @@ Coming soon - PyInstaller spec file included for building standalone executables
 - ✅ Complete offline data storage (local SQLite)
 
 **Bug Fixes:**
+
 - Maintenance flag not clearing after CLEANING
 - Loadout checkouts not appearing in checkouts tab
 - NFA item checkout crash
@@ -208,7 +211,7 @@ Coming soon - PyInstaller spec file included for building standalone executables
 
 ---
 
-### Development Phases Completed:
+### Development Phases Completed
 
 **Phase 1:** Reload/Handload Log
 **Phase 2:** Round Count & Maintenance Thresholds
@@ -220,11 +223,28 @@ Coming soon - PyInstaller spec file included for building standalone executables
 
 ## Upcoming Features (Post-MVP)
 
-- **Beta Polish:** UI refinements, performance optimizations, error handling improvements
+### ALPHA (we are here)
+
+- **Polish:** UI refinements, performance optimizations, error handling improvements
+- Codebase Refactor: need to do this now before the codebase gets too big otherwise future maintenance and expansion will become _impossible_
 - **Windows Support:** Testing and packaging for Windows
 - **macOS Support:** Testing and packaging for macOS
-- **Photo Attachments:** Full photo support for maintenance logs
-- **Reporting:** Export summary reports (inventory lists, maintenance schedules, etc.)
-- **Data Visualization:** Charts for usage statistics, maintenance trends
-- **Advanced Search:** Filter and search across all data
 
+### BETA (all versions will be marked 0.x.y where x > 1)
+
+The Beta phase focuses on **additional offline‑only features** that respect user privacy and do not require any hosted infrastructure.
+
+| Feature | Goal | Notes (Offline‑First Design) | Target Beta Window |
+| --- | --- | --- | --- |
+| **Multi‑profile “vault” system** | Cleanly separate personal, parish, and test data into independent profiles, similar in feel to Obsidian’s vault picker but for GearTracker databases. | Each profile is just a different `.db` file (e.g., `personal.db`, `parish.db`), selected from a startup screen. No cross‑profile querying; switching profiles simply opens a different local database. | Beta 1 |
+| **QR / barcode labels & scanning** | Speed up opening items and logging maintenance/checkouts, especially for larger inventories, inspired by QR‑centric workflows in other gear apps.[web:40][web:37] | GearTracker generates printable QR codes that encode local item IDs. A webcam or USB scanner decodes the code and focuses the corresponding record—no online lookup, no cloud registry. | Beta 1 |
+| **Trip / expedition manifests (extended loadouts)** | Turn existing loadouts into “trip manifests” for hunts and range days so you can see exactly what left the house, what came back, and how it was used.[attached_file:2][web:148] | New Trip/Manifest entity built on top of current loadouts: per‑trip gear list, consumable quantities, and simple status (Planned / In Progress / Complete). Manifests are saved locally and exportable to Markdown/CSV for printing and archiving. | Beta 1 |
+| **Richer maintenance photos & galleries** | Make it easy to visually track wear, damage, and targets over time without storing any images off‑device.[attached_file:2] | Store only file paths to photos; add gallery views per item and per maintenance event, plus quick open‑in‑viewer. No upload, no embedded cloud library. | Beta 1–2 |
+| **Chronograph & target helper** | Provide basic ES/SD calculations and target tracking comparable to popular shooting/reloading apps, but entirely offline.[web:149][web:151] | Add “Range Session” records that store shot strings, computed stats, conditions, and links to target photos. Sessions tie to firearms and reload batches already in the database.[attached_file:2] | Beta 2 |
+| **Summary report exports** | Generate human‑readable summaries like “current inventory,” “maintenance due,” or “season usage recap” for printing, sharing, or personal records.[attached_file:2][web:151] | Reports are generated from local data and exported as Markdown, HTML, or CSV into a user‑chosen folder; users can then print or convert to PDF using their own tools. Nothing is sent to any remote service. | Beta 2 |
+| **Local data visualization** | Offer simple charts for round counts, maintenance load over time, and range‑session volume to help users understand how their gear is used.[web:149] | Charts are rendered inside GearTracker from the local SQLite database only. No external analytics libraries that phone home, and no online dashboards. | Beta 2–3 |
+| **Advanced search & filtering** | Let users quickly answer questions like “.45‑70 reloads used last season on this rifle where rain exposure was logged” using a unified search interface.[attached_file:2] | Implement a local query builder across firearms, NFA items, soft gear, reload batches, maintenance logs, checkouts, and trips. Results can be exported as CSV/Markdown but never leave the machine by default. | Beta 3 |
+| **Manual location tagging for hunts & range sessions** | Capture meaningful location context without continuous GPS tracking or map‑based telemetry, avoiding the privacy concerns common in cloud hunting apps.[web:73][web:138][web:79] | Optional, text‑only fields (e.g., “Sam Houston NF – Unit 3”) or manually entered UTM/lat‑long on trips and range sessions. No live GPS requirement, no online map tiles, and no location sharing. | Beta 3 |
+| **User settings & preferences** | Centralize configuration without accounts: paths, defaults, and behavior tuning that stays on the user’s machine.[attached_file:2] | Store a small config file alongside the database with UI theme, default export directories, maintenance threshold defaults, and profile metadata. No remote sync, telemetry, or feature flags. | Beta 3 |
+
+All Beta work continues the core guarantees of the MVP release: **no accounts, no ads, no tracking, and no cloud‑hosted infrastructure—just local data the user controls and can back up or export as they see fit.**[attached_file:2][web:79]
