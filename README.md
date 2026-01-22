@@ -46,6 +46,9 @@ python ui.py
 ```
 
 **Single-File Binary:**
+**LINUX Binary available under Release tags. Windows and MacOS coming in ALPHA phase:**
+<https://github.com/alexschexc/gear-tracker/releases/tag/v0.1.0-alpha>
+
 Coming soon - PyInstaller spec file included for building standalone executables. Currently only tested on Linux; Windows and macOS support planned for beta releases.
 
 ## Upcoming Features (Post-MVP)
