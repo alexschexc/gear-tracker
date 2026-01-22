@@ -48,6 +48,7 @@ python ui.py
 **Single-File Binary:**
 **LINUX Binary available under Release tags. Windows and MacOS coming in ALPHA phase:**
 <https://github.com/alexschexc/gear-tracker/releases/tag/v0.1.0-alpha>
+(click on the link and scroll to the bottom, the Linux binary is the first item in the assets list. You can download just by clicking on the name of the binary GearTracker)
 
 Coming soon - PyInstaller spec file included for building standalone executables. Currently only tested on Linux; Windows and macOS support planned for beta releases.
 
