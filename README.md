@@ -247,4 +247,9 @@ The Beta phase focuses on **additional offline‑only features** that respect us
 | **Manual location tagging for hunts & range sessions** | Capture meaningful location context without continuous GPS tracking or map‑based telemetry, avoiding the privacy concerns common in cloud hunting apps.[web:73][web:138][web:79] | Optional, text‑only fields (e.g., “Sam Houston NF – Unit 3”) or manually entered UTM/lat‑long on trips and range sessions. No live GPS requirement, no online map tiles, and no location sharing. | Beta 3 |
 | **User settings & preferences** | Centralize configuration without accounts: paths, defaults, and behavior tuning that stays on the user’s machine.[attached_file:2] | Store a small config file alongside the database with UI theme, default export directories, maintenance threshold defaults, and profile metadata. No remote sync, telemetry, or feature flags. | Beta 3 |
 
-All Beta work continues the core guarantees of the MVP release: **no accounts, no ads, no tracking, and no cloud‑hosted infrastructure—just local data the user controls and can back up or export as they see fit.**[attached_file:2][web:79]
+All Beta work continues the core guarantees of the MVP release: **no accounts, no ads, no tracking, and no cloud‑hosted infrastructure—just local data the user controls and can back up or export as they see fit.**
+
+# Donation Link
+
+If you're benefitting from this software consider throwing me a bone.
+<https://paypal.me/ASchexnayder296>
