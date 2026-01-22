@@ -12,6 +12,42 @@ GearTracker has reached MVP status with all planned core features complete. The 
 - 🚧 Windows (Coming Soon)
 - 🚧 macOS (Coming Soon)
 
+## Data Storage & Privacy
+
+GearTracker stores all data in a single local SQLite database file.
+By default, the database is created at:
+
+- Linux/macOS: `~/.gear_tracker/tracker.db`
+- Windows: `C:\Users\<username>\.gear_tracker\tracker.db`
+
+No data is ever sent to any remote server. The developer does not operate any backend service and never has access to your inventory, NFA records, or logs.
+
+If you want additional protection, you can move the `.gear_tracker` folder onto an encrypted volume (e.g., LUKS, VeraCrypt, BitLocker, FileVault) and then symlink it back into your home directory.
+(this has not been tested by the developer yet. This should work in theory, I will leave an update note confirming if this is the case)
+
+**Backups:** To back up your data, close GearTracker and copy `tracker.db` to a safe location, for example:
+
+```bash
+cp ~/.gear_tracker/tracker.db ~/.gear_tracker/tracker.db.backup
+```
+
+## Installation & Running
+
+**Requirements:**
+
+- Python 3.14+
+- PyQt6
+
+Install dependencies and run:
+
+```bash
+pip install PyQt6
+python ui.py
+```
+
+**Single-File Binary:**
+Coming soon - PyInstaller spec file included for building standalone executables. Currently only tested on Linux; Windows and macOS support planned for beta releases.
+
 ## Upcoming Features (Post-MVP)
 
 ### ALPHA (we are here)
@@ -127,8 +163,8 @@ All Beta work continues the core guarantees of the MVP release: **no accounts, n
 
 **NFA Registry Integration:**
 
-- Track all NFA items in one place
-- Tax stamp ID tracking
+- Track all user owned NFA items in one place
+- Tax stamp ID recorded
 - Form type recording (Form 1, Form 4, etc.)
 - Trust name association
 - Manufacturer and serial number tracking
@@ -168,42 +204,6 @@ All Beta work continues the core guarantees of the MVP release: **no accounts, n
 - Validation comments with field requirements
 - Enum value documentation
 
-## Data Storage & Privacy
-
-GearTracker stores all data in a single local SQLite database file.
-By default, the database is created at:
-
-- Linux/macOS: `~/.gear_tracker/tracker.db`
-- Windows: `C:\Users\<username>\.gear_tracker\tracker.db`
-
-No data is ever sent to any remote server. The developer does not operate any backend service and never has access to your inventory, NFA records, or logs.
-
-If you want additional protection, you can move the `.gear_tracker` folder onto an encrypted volume (e.g., LUKS, VeraCrypt, BitLocker, FileVault) and then symlink it back into your home directory.
-(this has not been tested by the developer yet. This should work in theory, I will leave an update note confirming if this is the case)
-
-**Backups:** To back up your data, close GearTracker and copy `tracker.db` to a safe location, for example:
-
-```bash
-cp ~/.gear_tracker/tracker.db ~/.gear_tracker/tracker.db.backup
-```
-
-## Installation & Running
-
-**Requirements:**
-
-- Python 3.14+
-- PyQt6
-
-Install dependencies and run:
-
-```bash
-pip install PyQt6
-python ui.py
-```
-
-**Single-File Binary:**
-Coming soon - PyInstaller spec file included for building standalone executables. Currently only tested on Linux; Windows and macOS support planned for beta releases.
-
 ---
 
 ## Version History
@@ -235,7 +235,7 @@ Coming soon - PyInstaller spec file included for building standalone executables
 
 ---
 
-### Development Phases Completed
+### Pre-ALPHA Development Phases Completed
 
 **Phase 1:** Reload/Handload Log
 **Phase 2:** Round Count & Maintenance Thresholds
@@ -245,7 +245,7 @@ Coming soon - PyInstaller spec file included for building standalone executables
 
 ---
 
-# Donation Link
+## Donation Link
 
 If you're benefitting from this software consider throwing me a bone.
 <https://paypal.me/ASchexnayder296>
