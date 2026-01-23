@@ -42,7 +42,7 @@ Install dependencies and run:
 
 ```bash
 pip install PyQt6
-python ui.py
+python main.py
 ```
 
 **Single-File Binary:**
