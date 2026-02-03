@@ -10,7 +10,7 @@ GearTracker has reached MVP status with all planned core features complete. The 
 
 - ✅ Linux (Currently Supported)
 - ✅ Windows (Currently Supported)
-- 🚧 macOS (Coming Soon)
+- ✅ macOS (Currently Supported)
 
 ## Data Storage & Privacy
 
@@ -52,6 +52,7 @@ Pre-built standalone executables are available under Releases:
 
 **Linux Binary:** Download from the latest release assets
 **Windows Binary:** `GearTracker.exe` available under Release tags
+**macOS Binary:** `GearTracker-macOS-unnotarized.dmg` available under Release tags
 <https://github.com/alexschexc/gear-tracker/releases/tag/v0.1.0-alpha>
 
 Download the appropriate executable for your platform and run directly - no Python installation required.
@@ -59,6 +60,7 @@ Download the appropriate executable for your platform and run directly - no Pyth
 **Note:** PyInstaller spec files are included in the repository for building executables on each platform:
 - `geartracker_linux.spec` (included in legacyCode/)
 - `geartracker_windows.spec`
+- `geartracker_macos.spec`
 
 ## Upcoming Features (Post-MVP)
 
@@ -66,8 +68,8 @@ Download the appropriate executable for your platform and run directly - no Pyth
 
 - **Polish:** UI refinements, performance optimizations, error handling improvements
 - Codebase Refactor: need to do this now before the codebase gets too big otherwise future maintenance and expansion will become _impossible_
-- **Windows Support:** Testing and packaging for Windows
-- **macOS Support:** Testing and packaging for macOS
+- **Windows Support:** ✅ Complete
+- **macOS Support:** ✅ Complete
 
 ### BETA (all versions will be marked 0.x.y where x > 1)
 

@@ -1,0 +1,113 @@
+name: Build macOS Executable
+
+on:
+  release:
+    types: [created]
+  push:
+    branches: [main]
+    paths:
+      - '**.py'
+      - 'src/**'
+      - 'geartracker_macos.spec'
+      - 'build_macos.sh'
+      - '.github/workflows/build-macos.yml'
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pyinstaller pillow pyqt6
+
+      - name: Convert icon to ICNS
+        run: |
+          python -c "
+          from PIL import Image
+          import tempfile
+          import subprocess
+          import os
+
+          img = Image.open('icon.png')
+          sizes = [(16, 16), (32, 32), (64, 64), (128, 128), (256, 256), (512, 512), (1024, 1024)]
+
+          with tempfile.TemporaryDirectory() as tmpdir:
+            iconset_dir = os.path.join(tmpdir, 'GearTracker.iconset')
+            os.makedirs(iconset_dir, exist_ok=True)
+
+            for size in sizes:
+              icon_name = f'icon_{size[0]}x{size[1]}.png'
+              resized = img.resize(size, Image.LANCZOS)
+              resized.save(os.path.join(tmpdir, icon_name))
+
+            for size in [(16, 16), (32, 32), (64, 64), (128, 128), (256, 256), (512, 512)]:
+              src = f'icon_{size[0]}x{size[1]}.png'
+              dst = f'icon_{size[0]}x{size[1]}@2x.png'
+              resized = img.resize((size[0]*2, size[1]*2), Image.LANCZOS)
+              resized.save(os.path.join(tmpdir, dst))
+
+            for size in sizes:
+              src = f'icon_{size[0]}x{size[1]}.png'
+              subprocess.run(['cp', os.path.join(tmpdir, src), os.path.join(iconset_dir, src)], check=True)
+
+            for size in [(16, 16), (32, 32), (64, 64), (128, 128), (256, 256), (512, 512)]:
+              src = f'icon_{size[0]}x{size[1]}.png'
+              dst = f'icon_{size[0]}x{size[1]}@2x.png'
+              subprocess.run(['cp', os.path.join(tmpdir, dst), os.path.join(iconset_dir, dst)], check=True)
+
+            subprocess.run(['iconutil', '-c', 'icns', '-o', 'icon.icns', iconset_dir], check=True)
+          "
+
+      - name: Build macOS executable
+        run: |
+          pyinstaller geartracker_macos.spec --clean
+
+      - name: Create DMG
+        run: |
+          # Create a simple DMG using hdiutil
+          APP_NAME="GearTracker"
+          DMG_NAME="${APP_NAME}-macOS-unnotarized"
+
+          # Create temporary directory structure for DMG
+          mkdir -p tmp_dmg
+
+          # Copy app to the structure
+          cp -R "dist/${APP_NAME}.app" tmp_dmg/
+
+          # Create the DMG
+          hdiutil create -volname "$APP_NAME" \
+            -srcfolder tmp_dmg \
+            -ov -format UDZO \
+            "${DMG_NAME}.dmg"
+
+          # Show DMG info
+          ls -lh "${DMG_NAME}.dmg"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GearTracker-macOS
+          path: |
+            dist/GearTracker.app
+            *.dmg
+
+      - name: Upload to release
+        if: github.event_name == 'release' && github.event.action == 'created'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/GearTracker.app
+            *.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
