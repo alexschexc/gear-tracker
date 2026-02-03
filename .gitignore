@@ -9,5 +9,3 @@ env/
 agentLogs/
 build/
 dist/
-*.spec
-
