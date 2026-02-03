@@ -2499,9 +2499,19 @@ class GearTrackerMainWindow(QMainWindow):
             if item.item_type == GearCategory.FIREARM.value
         ]
 
+        nfa_items_in_loadout = [
+            item
+            for item in loadout_items
+            if item.item_type == GearCategory.NFA_ITEM.value
+        ]
+
         self.firearm_ammo_inputs = {}
         all_firearms = self.firearm_repo.get_all()
         firearm_dict = {f.id: f for f in all_firearms}
+
+        self.nfa_ammo_inputs = {}
+        all_nfa_items = self.gear_repo.get_all_nfa_items()
+        nfa_dict = {n.id: n for n in all_nfa_items}
 
         loadout_consumables = self.loadout_repo.get_consumables(
             loadout_checkout.loadout_id
@@ -2547,6 +2557,29 @@ class GearTrackerMainWindow(QMainWindow):
                     info_layout.addRow("", QWidget())
                     info_layout.addRow(fw_label, ammo_combo)
                     info_layout.addRow("Rounds fired:", rounds_spinbox)
+
+        if nfa_items_in_loadout:
+            nfa_section = QLabel("<b>NFA Items (Suppressors):</b>")
+            nfa_section.setStyleSheet("margin-top: 10px;")
+            info_layout.addRow(nfa_section)
+
+            for item in nfa_items_in_loadout:
+                nfa_item = nfa_dict.get(item.item_id)
+                if nfa_item:
+                    nfa_label = QLabel(f"{nfa_item.name}:")
+                    nfa_label.setToolTip(
+                        f"Type: {nfa_item.nfa_type.value if hasattr(nfa_item.nfa_type, 'value') else str(nfa_item.nfa_type)}"
+                    )
+
+                    rounds_spinbox = QSpinBox()
+                    rounds_spinbox.setMinimum(0)
+                    rounds_spinbox.setMaximum(99999)
+                    rounds_spinbox.setValue(0)
+
+                    self.nfa_ammo_inputs[nfa_item.id] = rounds_spinbox
+
+                    info_layout.addRow(nfa_label, rounds_spinbox)
+                    info_layout.addRow("Shots through:", rounds_spinbox)
 
         rain_checkbox = QCheckBox("Exposed to rain during use?")
         info_layout.addRow("", rain_checkbox)
@@ -2699,6 +2732,28 @@ class GearTrackerMainWindow(QMainWindow):
                         )
                         self.gear_repo.add_maintenance_log(amo_log)
 
+            if hasattr(self, "nfa_ammo_inputs"):
+                for nfa_id, rounds_spinbox in self.nfa_ammo_inputs.items():
+                    rounds = rounds_spinbox.value()
+                    if rounds > 0:
+                        nfa_item = self.gear_repo.get_nfa_item(nfa_id)
+                        if nfa_item:
+                            new_rounds = nfa_item.rounds_fired + rounds
+                            self.gear_repo.update_nfa_rounds_fired(
+                                nfa_id, new_rounds, needs_maintenance=True
+                            )
+                            log = MaintenanceLog(
+                                id=str(uuid.uuid4()),
+                                item_id=nfa_id,
+                                item_type=GearCategory.NFA_ITEM.value,
+                                log_type=MaintenanceType.FIRED_ROUNDS.value,
+                                date=datetime.now(),
+                                details=f"Shots through suppressor: {rounds}",
+                                ammo_count=rounds,
+                                photo_path=None,
+                            )
+                            self.gear_repo.add_maintenance_log(log)
+
             if hasattr(self, "restock_inputs"):
                 for cons_id, (checkbox, spinbox) in self.restock_inputs.items():
                     if checkbox.isChecked():
@@ -2830,9 +2885,9 @@ class GearTrackerMainWindow(QMainWindow):
         layout = QVBoxLayout()
 
         self.nfa_table = QTableWidget()
-        self.nfa_table.setColumnCount(5)
+        self.nfa_table.setColumnCount(7)
         self.nfa_table.setHorizontalHeaderLabels(
-            ["Name", "Type", "Serial", "Tax Stamp", "Status"]
+            ["Name", "Type", "Serial", "Tax Stamp", "Rounds", "Last Cleaned", "Status"]
         )
         self.nfa_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
@@ -2844,6 +2899,18 @@ class GearTrackerMainWindow(QMainWindow):
         add_btn = QPushButton("Add NFA Item")
         add_btn.clicked.connect(self.open_add_nfa_dialog)
         btn_layout.addWidget(add_btn)
+
+        edit_btn = QPushButton("Edit Item")
+        edit_btn.clicked.connect(self.edit_nfa_item)
+        btn_layout.addWidget(edit_btn)
+
+        log_btn = QPushButton("Log Maintenance")
+        log_btn.clicked.connect(self.open_log_nfa_maintenance_dialog)
+        btn_layout.addWidget(log_btn)
+
+        history_btn = QPushButton("View History")
+        history_btn.clicked.connect(self.view_nfa_history)
+        btn_layout.addWidget(history_btn)
 
         delete_btn = QPushButton("Delete")
         delete_btn.setStyleSheet("background-color: #6B2020;")
@@ -2872,7 +2939,26 @@ class GearTrackerMainWindow(QMainWindow):
             )
             self.nfa_table.setItem(i, 2, QTableWidgetItem(item.serial_number))
             self.nfa_table.setItem(i, 3, QTableWidgetItem(item.tax_stamp_id))
-            self.nfa_table.setItem(i, 4, QTableWidgetItem(item.status))
+
+            rounds_item = QTableWidgetItem(str(item.rounds_fired))
+            if item.needs_maintenance:
+                rounds_item.setBackground(QColor(255, 150, 150))
+            self.nfa_table.setItem(i, 4, rounds_item)
+
+            last_clean = self.maint_repo.get_last_cleaning_date(item.id)
+            clean_text = last_clean.strftime("%Y-%m-%d") if last_clean else "Never"
+            clean_item = QTableWidgetItem(clean_text)
+            if item.needs_maintenance:
+                clean_item.setBackground(QColor(255, 150, 150))
+            self.nfa_table.setItem(i, 5, clean_item)
+
+            status_item = QTableWidgetItem(item.status)
+            if item.status == "CHECKED_OUT":
+                status_item.setBackground(QColor(255, 200, 200))
+            if item.needs_maintenance:
+                status_item.setBackground(QColor(255, 100, 100))
+                status_item.setForeground(QColor(255, 255, 255))
+            self.nfa_table.setItem(i, 6, status_item)
 
     def open_add_nfa_dialog(self):
         dialog = QDialog(self)
@@ -2943,6 +3029,236 @@ class GearTrackerMainWindow(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             self.gear_repo.delete_nfa_item(selected.id)
             self.refresh_nfa_items()
+
+    def edit_nfa_item(self):
+        row = self.nfa_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Error", "Select an item to edit")
+            return
+
+        items = self.gear_repo.get_all_nfa_items()
+        selected = items[row]
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Edit NFA Item: {selected.name}")
+        dialog.setMinimumWidth(450)
+
+        layout = QFormLayout()
+
+        name_input = QLineEdit(selected.name)
+        layout.addRow("Name:", name_input)
+
+        type_combo = QComboBox()
+        for nfa_type in NFAItemType:
+            type_combo.addItem(nfa_type.value, nfa_type)
+        type_combo.setCurrentText(
+            selected.nfa_type.value
+            if hasattr(selected.nfa_type, "value")
+            else str(selected.nfa_type)
+        )
+        layout.addRow("NFA Type:", type_combo)
+
+        manufacturer_input = QLineEdit(selected.manufacturer)
+        layout.addRow("Manufacturer:", manufacturer_input)
+
+        serial_input = QLineEdit(selected.serial_number)
+        layout.addRow("Serial #:", serial_input)
+
+        tax_stamp_input = QLineEdit(selected.tax_stamp_id)
+        layout.addRow("Tax Stamp ID:", tax_stamp_input)
+
+        caliber_input = QLineEdit(selected.caliber_bore)
+        layout.addRow("Caliber/Bore:", caliber_input)
+
+        form_type_input = QLineEdit(selected.form_type)
+        layout.addRow("Form Type:", form_type_input)
+
+        trust_name_input = QLineEdit(selected.trust_name)
+        layout.addRow("Trust Name:", trust_name_input)
+
+        status_combo = QComboBox()
+        status_combo.addItems(["AVAILABLE", "CHECKED_OUT", "MAINTENANCE", "RETIRED"])
+        status_combo.setCurrentText(selected.status)
+        layout.addRow("Status:", status_combo)
+
+        notes_input = QTextEdit()
+        notes_input.setPlainText(selected.notes or "")
+        layout.addRow("Notes:", notes_input)
+
+        maint_group = QGroupBox("Maintenance Settings")
+        maint_layout = QFormLayout()
+
+        clean_interval_spin = QSpinBox()
+        clean_interval_spin.setRange(0, 10000)
+        clean_interval_spin.setValue(selected.clean_interval_rounds)
+        clean_interval_spin.setSuffix(" rounds")
+        maint_layout.addRow("Clean Interval:", clean_interval_spin)
+
+        oil_interval_spin = QSpinBox()
+        oil_interval_spin.setRange(0, 365)
+        oil_interval_spin.setValue(selected.oil_interval_days)
+        oil_interval_spin.setSuffix(" days")
+        maint_layout.addRow("Oil Interval:", oil_interval_spin)
+
+        maint_group.setLayout(maint_layout)
+        layout.addRow(maint_group)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addRow(button_box)
+
+        dialog.setLayout(layout)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected.name = name_input.text()
+            selected.nfa_type = type_combo.currentData()
+            selected.manufacturer = manufacturer_input.text()
+            selected.serial_number = serial_input.text()
+            selected.tax_stamp_id = tax_stamp_input.text()
+            selected.caliber_bore = caliber_input.text()
+            selected.form_type = form_type_input.text()
+            selected.trust_name = trust_name_input.text()
+            selected.status = status_combo.currentText()
+            selected.notes = notes_input.toPlainText()
+            selected.clean_interval_rounds = clean_interval_spin.value()
+            selected.oil_interval_days = oil_interval_spin.value()
+            self.gear_repo.update_nfa_item(selected)
+            self.refresh_nfa_items()
+
+    def open_log_nfa_maintenance_dialog(self):
+        row = self.nfa_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Error", "Select an NFA item to log maintenance")
+            return
+
+        items = self.gear_repo.get_all_nfa_items()
+        selected = items[row]
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Log Maintenance: {selected.name}")
+        dialog.setMinimumWidth(400)
+
+        layout = QFormLayout()
+
+        type_combo = QComboBox()
+        type_combo.addItems(
+            [
+                "CLEANING",
+                "LUBRICATION",
+                "REPAIR",
+                "INSPECTION",
+                "FIRED_ROUNDS",
+                "OILING",
+                "RAIN_EXPOSURE",
+                "CORROSIVE_AMMO",
+                "LEAD_AMMO",
+            ]
+        )
+        layout.addRow("Type:", type_combo)
+
+        rounds_spin = QSpinBox()
+        rounds_spin.setRange(0, 100000)
+        rounds_spin.setValue(0)
+        layout.addRow("Shots fired:", rounds_spin)
+
+        details_input = QTextEdit()
+        details_input.setMaximumHeight(80)
+        layout.addRow("Details:", details_input)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addRow(button_box)
+
+        dialog.setLayout(layout)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            log_type = type_combo.currentText()
+
+            if log_type == "CLEANING":
+                self.gear_repo.clear_nfa_maintenance_flag(selected.id)
+
+            if log_type == "FIRED_ROUNDS":
+                new_rounds = selected.rounds_fired + rounds_spin.value()
+                self.gear_repo.update_nfa_rounds_fired(
+                    selected.id, new_rounds, needs_maintenance=True
+                )
+            elif rounds_spin.value() > 0:
+                new_rounds = selected.rounds_fired + rounds_spin.value()
+                self.gear_repo.update_nfa_rounds_fired(
+                    selected.id, new_rounds, needs_maintenance=True
+                )
+
+            log = MaintenanceLog(
+                id=str(uuid.uuid4()),
+                item_id=selected.id,
+                item_type=GearCategory.NFA_ITEM.value,
+                log_type=log_type,
+                date=datetime.now(),
+                details=details_input.toPlainText(),
+                ammo_count=rounds_spin.value() if rounds_spin.value() > 0 else None,
+                photo_path=None,
+            )
+            self.gear_repo.add_maintenance_log(log)
+            self.refresh_nfa_items()
+
+    def view_nfa_history(self):
+        row = self.nfa_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Error", "Select an item first")
+            return
+
+        items = self.gear_repo.get_all_nfa_items()
+        selected = items[row]
+
+        logs = self.gear_repo.get_maintenance_logs(selected.id)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"History: {selected.name}")
+        dialog.setMinimumSize(600, 400)
+
+        layout = QVBoxLayout()
+
+        info_layout = QHBoxLayout()
+        info_layout.addWidget(
+            QLabel(
+                f"Type: {selected.nfa_type.value if hasattr(selected.nfa_type, 'value') else str(selected.nfa_type)}"
+            )
+        )
+        info_layout.addWidget(QLabel(f"Rounds: {selected.rounds_fired}"))
+        info_layout.addWidget(QLabel(f"Serial: {selected.serial_number}"))
+        layout.addLayout(info_layout)
+
+        hist_table = QTableWidget()
+        hist_table.setColumnCount(4)
+        hist_table.setHorizontalHeaderLabels(["Date", "Type", "Details", "Rounds"])
+        hist_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+
+        for i, log in enumerate(logs):
+            hist_table.insertRow(i)
+            hist_table.setItem(
+                i,
+                0,
+                QTableWidgetItem(
+                    log.date.strftime("%Y-%m-%d %H:%M") if log.date else ""
+                ),
+            )
+            hist_table.setItem(i, 1, QTableWidgetItem(log.log_type))
+            hist_table.setItem(i, 2, QTableWidgetItem(log.details or ""))
+            hist_table.setItem(
+                i, 3, QTableWidgetItem(str(log.ammo_count) if log.ammo_count else "")
+            )
+
+        layout.addWidget(hist_table)
+        dialog.setLayout(layout)
+        dialog.exec()
 
     # ============== TRANSFERS TAB ==============
 

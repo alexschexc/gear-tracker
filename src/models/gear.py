@@ -31,11 +31,16 @@ class NFAItem:
     serial_number: str
     tax_stamp_id: str
     caliber_bore: str
-    purchase_date: datetime
+    purchase_date: datetime | None
     form_type: str = ""
     trust_name: str = ""
     notes: str = ""
     status: str = "AVAILABLE"
+    rounds_fired: int = 0
+    clean_interval_rounds: int = 500
+    oil_interval_days: int = 90
+    needs_maintenance: bool = False
+    maintenance_conditions: str = ""
 
 
 @dataclass

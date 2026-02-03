@@ -33,6 +33,8 @@ from src.models import (
     GearCategory,
     NFAItemType,
     NFAFirearmType,
+    MaintenanceLog,
+    MaintenanceType,
 )
 
 
@@ -193,6 +195,10 @@ def test_nfa_item_operations(db):
         form_type="Form 4",
         notes="Test NFA item",
         status="AVAILABLE",
+        rounds_fired=0,
+        clean_interval_rounds=500,
+        oil_interval_days=90,
+        needs_maintenance=False,
     )
     repo.add_nfa_item(nfa)
     print("  ✓ NFA item created")
@@ -201,7 +207,90 @@ def test_nfa_item_operations(db):
     assert len(all_nfa) > 0, "Should have at least one NFA item"
     print(f"  ✓ Found {len(all_nfa)} NFA item(s)")
 
+    fetched_nfa = repo.get_nfa_item(nfa.id)
+    assert fetched_nfa is not None, "Should fetch NFA item by ID"
+    assert fetched_nfa.rounds_fired == 0, "Initial rounds should be 0"
+    assert fetched_nfa.clean_interval_rounds == 500, (
+        "Default clean interval should be 500"
+    )
+    assert fetched_nfa.needs_maintenance == False, (
+        "Initial needs_maintenance should be False"
+    )
+    print("  ✓ NFA maintenance fields initialized correctly")
+
+    fetched_nfa.rounds_fired = 100
+    fetched_nfa.needs_maintenance = True
+    repo.update_nfa_item(fetched_nfa)
+    print("  ✓ NFA item updated with maintenance fields")
+
+    updated_nfa = repo.get_nfa_item(nfa.id)
+    assert updated_nfa.rounds_fired == 100, "Rounds should be updated"
+    assert updated_nfa.needs_maintenance == True, "needs_maintenance should be True"
+    print("  ✓ NFA maintenance fields persisted correctly")
+
     return nfa
+
+
+def test_nfa_maintenance_logging(db):
+    """Test NFA item maintenance logging."""
+    print("\nTesting NFA maintenance logging...")
+    repo = GearRepository(db)
+
+    nfa_serial = f"NFA-{uuid.uuid4().hex[:8].upper()}"
+    nfa = NFAItem(
+        id=str(uuid.uuid4()),
+        name="Test Suppressor Maint",
+        nfa_type=NFAItemType.SUPPRESSOR,
+        manufacturer="Test Mfg",
+        serial_number=nfa_serial,
+        tax_stamp_id=f"TAX-{uuid.uuid4().hex[:6].upper()}",
+        caliber_bore=".30 cal",
+        purchase_date=datetime.now(),
+    )
+    repo.add_nfa_item(nfa)
+    print("  ✓ NFA item created for maintenance test")
+
+    log = MaintenanceLog(
+        id=str(uuid.uuid4()),
+        item_id=nfa.id,
+        item_type=GearCategory.NFA_ITEM.value,
+        log_type=MaintenanceType.FIRED_ROUNDS.value,
+        date=datetime.now(),
+        details="Range session",
+        ammo_count=50,
+        photo_path=None,
+    )
+    repo.add_maintenance_log(log)
+    print("  ✓ NFA maintenance log created")
+
+    logs = repo.get_maintenance_logs(nfa.id)
+    assert len(logs) == 1, "Should have one maintenance log"
+    assert logs[0].ammo_count == 50, "Log should record shot count"
+    print("  ✓ NFA maintenance log retrieved correctly")
+
+    repo.update_nfa_rounds_fired(nfa.id, 50, needs_maintenance=True)
+    updated_nfa = repo.get_nfa_item(nfa.id)
+    assert updated_nfa.rounds_fired == 50, "Rounds should be updated"
+    assert updated_nfa.needs_maintenance == True, "needs_maintenance should be True"
+    print("  ✓ NFA rounds and maintenance flag updated")
+
+    clean_log = MaintenanceLog(
+        id=str(uuid.uuid4()),
+        item_id=nfa.id,
+        item_type=GearCategory.NFA_ITEM.value,
+        log_type=MaintenanceType.CLEANING.value,
+        date=datetime.now(),
+        details="Full detail and wipe down",
+        ammo_count=None,
+        photo_path=None,
+    )
+    repo.add_maintenance_log(clean_log)
+    repo.clear_nfa_maintenance_flag(nfa.id)
+    print("  ✓ NFA cleaning logged and maintenance flag cleared")
+
+    cleaned_nfa = repo.get_nfa_item(nfa.id)
+    assert cleaned_nfa.needs_maintenance == False, "needs_maintenance should be cleared"
+    print("  ✓ NFA maintenance flag cleared successfully")
 
 
 def test_attachment_operations(db):
@@ -514,6 +603,7 @@ def main():
     soft_gear = test_soft_gear_operations(db)
     consumable = test_consumable_operations(db)
     test_nfa_item_operations(db)
+    test_nfa_maintenance_logging(db)
     test_attachment_operations(db)
 
     loadout, loadout_checkout, loadout_firearm, loadout_consumable = (

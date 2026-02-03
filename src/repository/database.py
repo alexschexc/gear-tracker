@@ -124,13 +124,18 @@ class Database:
                 nfa_type TEXT NOT NULL,
                 manufacturer TEXT,
                 serial_number TEXT,
-                tax_stamp_id TEXT NOT NULL,
+                tax_stamp_id NOT NULL,
                 caliber_bore TEXT,
                 purchase_date INTEGER NOT NULL,
                 form_type TEXT,
                 trust_name TEXT,
                 notes TEXT,
-                status TEXT DEFAULT 'AVAILABLE'
+                status TEXT DEFAULT 'AVAILABLE',
+                rounds_fired INTEGER DEFAULT 0,
+                clean_interval_rounds INTEGER DEFAULT 500,
+                oil_interval_days INTEGER DEFAULT 90,
+                needs_maintenance INTEGER DEFAULT 0,
+                maintenance_conditions TEXT DEFAULT ''
             )
         """)
 
@@ -287,6 +292,13 @@ class Database:
                 ("mount_position", "TEXT", ""),
                 ("zero_distance_yards", "INTEGER", None),
                 ("zero_notes", "TEXT", ""),
+            ],
+            "nfa_items": [
+                ("rounds_fired", "INTEGER", 0),
+                ("clean_interval_rounds", "INTEGER", 500),
+                ("oil_interval_days", "INTEGER", 90),
+                ("needs_maintenance", "INTEGER", 0),
+                ("maintenance_conditions", "TEXT", ""),
             ],
         }
 

@@ -86,7 +86,7 @@ class GearRepository:
         conn = self.db.connect()
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO nfa_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO nfa_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 item.id,
                 item.name,
@@ -97,13 +97,18 @@ class GearRepository:
                 item.serial_number,
                 item.tax_stamp_id,
                 item.caliber_bore,
-                int(item.purchase_date.timestamp()),
+                int(item.purchase_date.timestamp()) if item.purchase_date else None,
                 item.form_type,
                 item.trust_name,
                 item.notes,
                 item.status.value
                 if isinstance(item.status, CheckoutStatus)
                 else item.status,
+                item.rounds_fired,
+                item.clean_interval_rounds,
+                item.oil_interval_days,
+                1 if item.needs_maintenance else 0,
+                item.maintenance_conditions,
             ),
         )
         conn.commit()
@@ -125,14 +130,51 @@ class GearRepository:
                 serial_number=row[4] or "",
                 tax_stamp_id=row[5],
                 caliber_bore=row[6] or "",
-                purchase_date=datetime.fromtimestamp(row[7]),
+                purchase_date=datetime.fromtimestamp(row[7])
+                if row[7]
+                else datetime.now(),
                 form_type=row[8] or "",
                 trust_name=row[9] or "",
                 notes=row[10] or "",
                 status=CheckoutStatus(row[11]).value if row[11] else "AVAILABLE",
+                rounds_fired=row[12] if len(row) > 12 else 0,
+                clean_interval_rounds=row[13] if len(row) > 13 else 500,
+                oil_interval_days=row[14] if len(row) > 14 else 90,
+                needs_maintenance=bool(row[15]) if len(row) > 15 else False,
+                maintenance_conditions=row[16] if len(row) > 16 else "",
             )
             for row in rows
         ]
+
+    def get_nfa_item(self, item_id: str) -> NFAItem | None:
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM nfa_items WHERE id = ?", (item_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return None
+
+        return NFAItem(
+            id=row[0],
+            name=row[1],
+            nfa_type=NFAItemType(row[2]) if row[2] else NFAItemType.SUPPRESSOR,
+            manufacturer=row[3] or "",
+            serial_number=row[4] or "",
+            tax_stamp_id=row[5],
+            caliber_bore=row[6] or "",
+            purchase_date=datetime.fromtimestamp(row[7]) if row[7] else datetime.now(),
+            form_type=row[8] or "",
+            trust_name=row[9] or "",
+            notes=row[10] or "",
+            status=CheckoutStatus(row[11]).value if row[11] else "AVAILABLE",
+            rounds_fired=row[12] if len(row) > 12 else 0,
+            clean_interval_rounds=row[13] if len(row) > 13 else 500,
+            oil_interval_days=row[14] if len(row) > 14 else 90,
+            needs_maintenance=bool(row[15]) if len(row) > 15 else False,
+            maintenance_conditions=row[16] if len(row) > 16 else "",
+        )
 
     def delete_nfa_item(self, item_id: str) -> None:
         conn = self.db.connect()
@@ -140,6 +182,66 @@ class GearRepository:
         cursor.execute("DELETE FROM maintenance_logs WHERE item_id = ?", (item_id,))
         cursor.execute("DELETE FROM checkouts WHERE item_id = ?", (item_id,))
         cursor.execute("DELETE FROM nfa_items WHERE id = ?", (item_id,))
+        conn.commit()
+        conn.close()
+
+    def update_nfa_item(self, item: NFAItem) -> None:
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """UPDATE nfa_items SET name = ?, nfa_type = ?, manufacturer = ?, 
+               serial_number = ?, tax_stamp_id = ?, caliber_bore = ?, purchase_date = ?,
+               form_type = ?, trust_name = ?, notes = ?, status = ?,
+               rounds_fired = ?, clean_interval_rounds = ?, oil_interval_days = ?,
+               needs_maintenance = ?, maintenance_conditions = ? WHERE id = ?""",
+            (
+                item.name,
+                item.nfa_type.value
+                if isinstance(item.nfa_type, NFAItemType)
+                else item.nfa_type,
+                item.manufacturer,
+                item.serial_number,
+                item.tax_stamp_id,
+                item.caliber_bore,
+                int(item.purchase_date.timestamp())
+                if item.purchase_date
+                else int(datetime.now().timestamp()),
+                item.form_type,
+                item.trust_name,
+                item.notes,
+                item.status.value
+                if isinstance(item.status, CheckoutStatus)
+                else item.status,
+                item.rounds_fired,
+                item.clean_interval_rounds,
+                item.oil_interval_days,
+                1 if item.needs_maintenance else 0,
+                item.maintenance_conditions,
+                item.id,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def update_nfa_rounds_fired(
+        self, item_id: str, rounds: int, needs_maintenance: bool = False
+    ) -> None:
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE nfa_items SET rounds_fired = ?, needs_maintenance = ? WHERE id = ?",
+            (rounds, 1 if needs_maintenance else 0, item_id),
+        )
+        conn.commit()
+        conn.close()
+
+    def clear_nfa_maintenance_flag(self, item_id: str) -> None:
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE nfa_items SET needs_maintenance = 0 WHERE id = ?",
+            (item_id,),
+        )
         conn.commit()
         conn.close()
 
