@@ -2336,11 +2336,12 @@ class GearTrackerMainWindow(QMainWindow):
         info_layout.addRow("Borrower:", borrower_label)
 
         checkout_date = checkout.checkout_date.strftime("%Y-%m-%d")
-        info_layout.addRow("Checked Out:", checkout_date)
+        info_layout.addRow("Checked Out:", QLabel(checkout_date))
 
         if checkout.expected_return:
             info_layout.addRow(
-                "Expected Return:", checkout.expected_return.strftime("%Y-%m-%d")
+                "Expected Return:",
+                QLabel(checkout.expected_return.strftime("%Y-%m-%d")),
             )
 
         info_group.setLayout(info_layout)
@@ -3011,44 +3012,142 @@ class GearTrackerMainWindow(QMainWindow):
     # ============== MAINTENANCE LOGGING ==============
 
     def open_log_dialog(self, item_type):
+        if item_type == GearCategory.FIREARM:
+            items = self.firearm_repo.get_all()
+            item_names = [f.name for f in items]
+        elif item_type == GearCategory.SOFT_GEAR:
+            items = self.gear_repo.get_all_soft_gear()
+            item_names = [g.name for g in items]
+        elif item_type == GearCategory.NFA_ITEM:
+            items = self.gear_repo.get_all_nfa_items()
+            item_names = [n.name for n in items]
+        else:
+            items = []
+            item_names = []
+
+        if not items:
+            QMessageBox.warning(self, "Error", "No items to log maintenance for")
+            return
+
         dialog = QDialog(self)
         dialog.setWindowTitle("Log Maintenance")
         dialog.setMinimumWidth(400)
 
         layout = QFormLayout()
 
+        item_combo = QComboBox()
+        item_combo.addItems(item_names)
+        layout.addRow("Item:", item_combo)
+
         type_combo = QComboBox()
         for mtype in MaintenanceType:
             type_combo.addItem(mtype.value, mtype)
         layout.addRow("Type:", type_combo)
 
+        rounds_spin = QSpinBox()
+        rounds_spin.setRange(0, 100000)
+        rounds_spin.setValue(0)
+        layout.addRow("Rounds fired since previous cleaning:", rounds_spin)
+
+        reset_rounds_check = QCheckBox("Reset rounds counter to 0")
+        layout.addRow("", reset_rounds_check)
+
         details_input = QTextEdit()
+        details_input.setMaximumHeight(80)
         layout.addRow("Details:", details_input)
 
-        button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        layout.addRow(button_box)
+        save_btn = QPushButton("Save")
 
-        dialog.setLayout(layout)
+        def save():
+            idx = item_combo.currentIndex()
+            selected_item = items[idx]
 
-        if dialog.exec() == QDialog.DialogCode.Accepted:
             log = MaintenanceLog(
                 id=str(uuid.uuid4()),
-                item_id="",
-                item_type=item_type,
+                item_id=selected_item.id,
+                item_type=item_type.value if hasattr(item_type, "value") else item_type,
                 log_type=type_combo.currentData(),
                 date=datetime.now(),
                 details=details_input.toPlainText(),
+                ammo_count=rounds_spin.value() if rounds_spin.value() > 0 else None,
+                photo_path=None,
             )
-            self.checkout_repo.add_log(log)
+            self.maint_repo.add_log(log)
+
+            if rounds_spin.value() > 0:
+                self.firearm_repo.update_rounds(selected_item.id, rounds_spin.value())
+
+            if reset_rounds_check.isChecked():
+                self.firearm_repo.reset_rounds(selected_item.id)
+
+            self.refresh_all()
+            dialog.accept()
+
+        save_btn.clicked.connect(save)
+        layout.addRow(save_btn)
+
+        dialog.setLayout(layout)
+        dialog.exec()
 
     def view_item_history(self, item_type):
-        QMessageBox.information(
-            self, "History", "View history feature - select an item in the table first"
+        if item_type == GearCategory.FIREARM:
+            table = self.firearm_table
+            items = self.firearm_repo.get_all()
+        elif item_type == GearCategory.SOFT_GEAR:
+            table = self.soft_gear_table
+            items = self.gear_repo.get_all_soft_gear()
+        elif item_type == GearCategory.NFA_ITEM:
+            table = self.nfa_table
+            items = self.gear_repo.get_all_nfa_items()
+        else:
+            QMessageBox.warning(self, "Error", "Unknown item type")
+            return
+
+        row = table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Error", "Select an item first")
+            return
+
+        if row >= len(items):
+            return
+
+        selected = items[row]
+        logs = self.maint_repo.get_logs_for_item(selected.id)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"History: {selected.name}")
+        dialog.setMinimumSize(600, 400)
+
+        layout = QVBoxLayout()
+
+        hist_table = QTableWidget()
+        hist_table.setColumnCount(4)
+        hist_table.setHorizontalHeaderLabels(["Date", "Type", "Details", "Rounds"])
+        hist_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
         )
+
+        for i, log in enumerate(logs):
+            hist_table.insertRow(i)
+            hist_table.setItem(
+                i,
+                0,
+                QTableWidgetItem(
+                    log.date.strftime("%Y-%m-%d %H:%M") if log.date else ""
+                ),
+            )
+            hist_type = (
+                log.log_type.value if hasattr(log.log_type, "value") else log.log_type
+            )
+            hist_table.setItem(i, 1, QTableWidgetItem(hist_type))
+            hist_table.setItem(i, 2, QTableWidgetItem(log.details or ""))
+            hist_table.setItem(
+                i, 3, QTableWidgetItem(str(log.ammo_count) if log.ammo_count else "")
+            )
+
+        layout.addWidget(hist_table)
+        dialog.setLayout(layout)
+        dialog.exec()
 
     def create_import_export_tab(self):
         widget = QWidget()

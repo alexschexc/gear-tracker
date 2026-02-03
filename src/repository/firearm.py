@@ -159,6 +159,16 @@ class FirearmRepository:
         conn.commit()
         conn.close()
 
+    def reset_rounds(self, firearm_id: str) -> None:
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE firearms SET rounds_fired = 0, needs_maintenance = 0 WHERE id = ?",
+            (firearm_id,),
+        )
+        conn.commit()
+        conn.close()
+
     def get_maintenance_status(self, firearm_id: str) -> dict:
         conn = self.db.connect()
         cursor = conn.cursor()

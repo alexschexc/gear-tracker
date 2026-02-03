@@ -404,6 +404,24 @@ class LoadoutRepository:
             ),
         )
 
+        for firearm_id, rounds in (rounds_fired_dict or {}).items():
+            cursor.execute(
+                "SELECT rounds_fired FROM firearms WHERE id = ?",
+                (firearm_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                new_total = row[0] + rounds
+                cursor.execute(
+                    "UPDATE firearms SET rounds_fired = ?, needs_maintenance = 1 WHERE id = ?",
+                    (new_total, firearm_id),
+                )
+
+        cursor.execute(
+            "UPDATE checkouts SET actual_return = ? WHERE id = ?",
+            (int(datetime.now().timestamp()), checkout_id),
+        )
+
         conn.commit()
         conn.close()
 
