@@ -9,7 +9,7 @@ GearTracker has reached MVP status with all planned core features complete. The 
 **Platform Support:**
 
 - ✅ Linux (Currently Supported)
-- 🚧 Windows (Coming Soon)
+- ✅ Windows (Currently Supported)
 - 🚧 macOS (Coming Soon)
 
 ## Data Storage & Privacy
@@ -33,8 +33,9 @@ cp ~/.gear_tracker/tracker.db ~/.gear_tracker/tracker.db.backup
 
 ## Installation & Running
 
-**Requirements:**
+### Running from Source
 
+**Requirements:**
 - Python 3.14+
 - PyQt6
 
@@ -45,12 +46,19 @@ pip install PyQt6
 python main.py
 ```
 
-**Single-File Binary:**
-**LINUX Binary available under Release tags. Windows and MacOS coming in ALPHA phase:**
-<https://github.com/alexschexc/gear-tracker/releases/tag/v0.1.0-alpha>
-(click on the link and scroll to the bottom, the Linux binary is the first item in the assets list. You can download just by clicking on the name of the binary GearTracker)
+### Standalone Executables
 
-Coming soon - PyInstaller spec file included for building standalone executables. Currently only tested on Linux; Windows and macOS support planned for beta releases.
+Pre-built standalone executables are available under Releases:
+
+**Linux Binary:** Download from the latest release assets
+**Windows Binary:** `GearTracker.exe` available under Release tags
+<https://github.com/alexschexc/gear-tracker/releases/tag/v0.1.0-alpha>
+
+Download the appropriate executable for your platform and run directly - no Python installation required.
+
+**Note:** PyInstaller spec files are included in the repository for building executables on each platform:
+- `geartracker_linux.spec` (included in legacyCode/)
+- `geartracker_windows.spec`
 
 ## Upcoming Features (Post-MVP)
 
